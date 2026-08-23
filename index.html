@@ -24,6 +24,8 @@
     --kick:       #E1553C;
     --snare:      #E8A33D;
     --hihat:      #7CF29C;
+    --tom:        #7FA8E0;
+    --bass:       #C77D3B;
     --font-display: 'Space Grotesk', 'Avenir Next', system-ui, sans-serif;
     --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
   }
@@ -144,10 +146,13 @@
   .step.on.kick{ background: color-mix(in srgb, var(--kick) 35%, #211F1A); border-color: var(--kick); }
   .step.on.snare{ background: color-mix(in srgb, var(--snare) 35%, #211F1A); border-color: var(--snare); }
   .step.on.hihat{ background: color-mix(in srgb, var(--hihat) 35%, #211F1A); border-color: var(--hihat); }
+  .step.on.tom{ background: color-mix(in srgb, var(--tom) 35%, #211F1A); border-color: var(--tom); }
   .step.playhead{ outline: 2px solid var(--ink); outline-offset: 1px; }
   .step.on.kick.playhead{ background: var(--kick); }
   .step.on.snare.playhead{ background: var(--snare); }
   .step.on.hihat.playhead{ background: var(--hihat); }
+  .step.on.tom.playhead{ background: var(--tom); }
+  .grid-note{ font-size: 10px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; }
 
   /* ---- Transport ---- */
   .transport{ display:flex; gap: 10px; margin-bottom: 14px; }
@@ -172,7 +177,8 @@
   button.ghost{ flex: 0 0 auto; background: transparent; }
 
   /* ---- Mixer ---- */
-  .mixer{ display:grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 6px; }
+  .mixer{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  button.export{ background: var(--panel-2); border-color: var(--bass); color: var(--bass); width:100%; margin-bottom: 14px; }
   .fader{ background: var(--panel-2); border:1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
   .fader .k{ font-size: 10px; letter-spacing:.1em; color: var(--ink-dim); text-transform:uppercase; display:flex; justify-content:space-between; }
   .fader .k span.val{ color: var(--ink); }
@@ -202,9 +208,11 @@
     font-size: 10.5px; color: var(--ink-dim); line-height: 1.5;
   }
 
+  @media (max-width: 560px){
+    .mixer{ grid-template-columns: 1fr; }
+  }
   @media (max-width: 420px){
     .readout{ grid-template-columns: repeat(2, 1fr); }
-    .mixer{ grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -248,6 +256,8 @@
     <div class="row"><div class="rlabel" style="color:var(--kick)">KICK</div><div class="steps" id="rowKick"></div></div>
     <div class="row"><div class="rlabel" style="color:var(--snare)">SNARE</div><div class="steps" id="rowSnare"></div></div>
     <div class="row"><div class="rlabel" style="color:var(--hihat)">HI-HAT</div><div class="steps" id="rowHihat"></div></div>
+    <div class="row"><div class="rlabel" style="color:var(--tom)">TOM</div><div class="steps" id="rowTom"></div></div>
+    <div class="grid-note">Shown: the repeating base groove. A tom fill + crash lands every 4th bar; the bass line follows the chord roots detected in the original MIDI and isn't step-grid shaped, so it plays in the mix but isn't drawn here.</div>
   </div>
 
   <div class="transport">
@@ -264,7 +274,13 @@
       <div class="k">Drum Track <span class="val" id="drumVal">85%</span></div>
       <input type="range" id="drumVol" min="0" max="100" value="85">
     </div>
+    <div class="fader">
+      <div class="k">Bass Line <span class="val" id="bassVal">80%</span></div>
+      <input type="range" id="bassVol" min="0" max="100" value="80">
+    </div>
   </div>
+
+  <button class="export" id="exportBtn" disabled>⇩ Export Multi-track MIDI (Original + Drums + Bass)</button>
 
   <div class="progress"><div class="progress-fill" id="progFill"></div></div>
   <div class="time-labels"><span id="tCur">0:00</span><span id="tTotal">0:00</span></div>
@@ -286,18 +302,25 @@
   // State
   // ---------------------------------------------------------------------
   let midi = null;
+  let baseFileName = 'session';
   let bpm = 120;
   let numerator = 4, denominator = 4;
-  let stepsPerBeat = 4;      // 16th notes per beat (8th notes for compound /8 meters)
-  let totalSteps = 16;       // steps in one bar
-  let pattern = { kick: [], snare: [], hihat: [] };
+  let stepsPerBeat = 4;       // steps (always 16th notes) per "beat" (denominator's note value)
+  let totalSteps = 16;        // steps in one bar
+  let secPerStep = 0.125;     // seconds per 16th note, derived from bpm
+  let barDuration = 2;        // seconds per bar
+  let pattern = { kick: [], snare: [], hihat: [] }; // one-bar template, used for the preview grid
   let genre = 'pop';
-  let barCounter = -1;
 
-  let originalBus = null, drumBus = null;
-  let kickSynth, snareSynth, hihatSynth, crashSynth;
-  let noteParts = [];        // Tone.Part instances for the original MIDI
-  let drumSeq = null;
+  let drumEvents = [];        // full-song absolute-time drum hits, also used for MIDI export
+  let bassEvents = [];        // full-song absolute-time bass notes, also used for MIDI export
+
+  const GM_DRUM = { kick: 36, snare: 38, hihat: 42, tomHi: 50, tomMid: 47, tomLo: 45, crash: 49 };
+
+  let originalBus = null, drumBus = null, bassBus = null;
+  let kickSynth, snareSynth, hihatSynth, tomSynth, crashSynth, bassSynth;
+  let noteParts = [];         // Tone.Part instances for the original MIDI
+  let drumPart = null, bassPart = null;
   let rafId = null;
   let isPlaying = false;
 
@@ -325,6 +348,10 @@
   const rowKick    = document.getElementById('rowKick');
   const rowSnare   = document.getElementById('rowSnare');
   const rowHihat   = document.getElementById('rowHihat');
+  const rowTom     = document.getElementById('rowTom');
+  const bassVol    = document.getElementById('bassVol');
+  const bassVal    = document.getElementById('bassVal');
+  const exportBtn  = document.getElementById('exportBtn');
 
   const fmtTime = s => {
     s = Math.max(0, s|0);
@@ -417,8 +444,125 @@
     return { kick, snare, hihat };
   }
 
+  // ---------------------------------------------------------------------
+  // Bass: detect a per-bar root note from the original MIDI's harmony,
+  // then apply a genre-specific rhythmic groove on top of it.
+  // ---------------------------------------------------------------------
+  function detectRootProgression(m, barDur, numBars) {
+    const notes = [];
+    m.tracks.forEach(t => { if (t.channel === 9) return; t.notes.forEach(n => notes.push(n)); });
+    const roots = [];
+    for (let b = 0; b < numBars; b++) {
+      const start = b * barDur, end = start + barDur;
+      const weights = new Array(12).fill(0);
+      notes.forEach(n => {
+        const overlap = Math.min(end, n.time + n.duration) - Math.max(start, n.time);
+        if (overlap > 0) weights[((n.midi % 12) + 12) % 12] += overlap;
+      });
+      let best = -1, bestW = 0;
+      weights.forEach((w, i) => { if (w > bestW) { bestW = w; best = i; } });
+      roots.push(best >= 0 ? best : (roots[b - 1] !== undefined ? roots[b - 1] : 0));
+    }
+    return roots; // pitch class 0-11 per bar
+  }
+
+  // Returns one bar's worth of bass hits: { step, semitone (offset from root), lenSteps }
+  function buildBassGroove(g, steps, spb) {
+    const beats = Math.max(1, Math.round(steps / spb));
+    const at = b => Math.min(steps - 1, b * spb);
+    const ev = [];
+    switch (g) {
+      case 'electronic': {                                       // octave-pumping 8th notes
+        const stride = Math.max(1, Math.round(spb / 2));
+        for (let s = 0; s < steps; s += stride) {
+          const isOct = (Math.floor(s / stride) % 2 === 1);
+          ev.push({ step: s, semitone: isOct ? 12 : 0, len: stride });
+        }
+        break;
+      }
+      case 'hiphop':                                              // sparse, syncopated, sustained
+        ev.push({ step: 0, semitone: 0, len: Math.min(steps, spb * 2) });
+        if (steps > spb * 2 + Math.floor(spb / 2)) ev.push({ step: spb * 2 + Math.floor(spb / 2), semitone: 0, len: Math.max(1, Math.floor(spb / 2)) });
+        if (beats > 3) ev.push({ step: at(3), semitone: 7, len: Math.max(1, Math.floor(spb / 2)) });
+        break;
+      case 'jazz': {                                              // walking quarter notes
+        const degrees = [0, 4, 7, 11];
+        for (let b = 0; b < beats; b++) ev.push({ step: at(b), semitone: degrees[b % degrees.length], len: spb });
+        break;
+      }
+      case 'ballad':                                              // sustained whole-bar root
+        ev.push({ step: 0, semitone: 0, len: steps });
+        break;
+      case 'pop':                                                 // root / fifth alternation
+        for (let b = 0; b < beats; b++) ev.push({ step: at(b), semitone: (b % 2 === 1 ? 7 : 0), len: spb });
+        break;
+      case 'rock':
+      default:                                                    // driving quarter-note root pulse
+        for (let b = 0; b < beats; b++) ev.push({ step: at(b), semitone: 0, len: spb });
+        break;
+    }
+    return ev;
+  }
+
+  // ---------------------------------------------------------------------
+  // Full-song event lists, shared by live playback AND the MIDI exporter
+  // ---------------------------------------------------------------------
+  function generateArrangement() {
+    if (!midi) return;
+    const duration = midi.duration || 0;
+    const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
+    const basePattern = buildPattern(genre, totalSteps, stepsPerBeat);
+    pattern = basePattern; // drives the preview grid
+
+    // --- drums: base groove every bar, tom fill + crash every 4th bar ---
+    const dEvents = [];
+    const tomCycle = ['tomHi', 'tomMid', 'tomLo'];
+    for (let b = 0; b < numBars; b++) {
+      const barStart = b * barDuration;
+      const isFillBar = (b % 4 === 3);
+      const isCrashBar = (b % 4 === 0 && b > 0);
+      for (let step = 0; step < totalSteps; step++) {
+        const time = barStart + step * secPerStep;
+        if (time > duration + 1) break;
+        if (isCrashBar && step === 0) dEvents.push({ time, type: 'crash', vel: 0.6 });
+        if (isFillBar && step >= totalSteps - stepsPerBeat) {
+          const localIdx = step - (totalSteps - stepsPerBeat);
+          dEvents.push({ time, type: tomCycle[localIdx % 3], vel: 0.85 });
+        } else {
+          if (basePattern.kick[step])  dEvents.push({ time, type: 'kick',  vel: 0.95 });
+          if (basePattern.snare[step]) dEvents.push({ time, type: 'snare', vel: 0.85 });
+          if (basePattern.hihat[step]) dEvents.push({ time, type: 'hihat', vel: (step % stepsPerBeat === 0) ? 0.55 : 0.32 });
+        }
+      }
+    }
+    drumEvents = dEvents;
+
+    // --- bass: chord-root-aware groove, genre-specific rhythm ---
+    const roots = detectRootProgression(midi, barDuration, numBars);
+    const baseOctave = genre === 'electronic' ? 28 : (genre === 'jazz' ? 40 : 36);
+    const groove = buildBassGroove(genre, totalSteps, stepsPerBeat);
+    const bEvents = [];
+    for (let b = 0; b < numBars; b++) {
+      const barStart = b * barDuration;
+      const rootPc = roots[b];
+      groove.forEach(ev => {
+        const time = barStart + ev.step * secPerStep;
+        if (time > duration + 1) return;
+        bEvents.push({
+          time,
+          midi: baseOctave + rootPc + ev.semitone,
+          duration: Math.max(0.08, ev.len * secPerStep * 0.9),
+          velocity: 0.8
+        });
+      });
+    }
+    bassEvents = bEvents;
+  }
+
   function renderGrid() {
-    [ [rowKick, pattern.kick, 'kick'], [rowSnare, pattern.snare, 'snare'], [rowHihat, pattern.hihat, 'hihat'] ]
+    const tomEmpty = new Array(totalSteps).fill(false); // toms only appear in fills, not the base loop
+    [ [rowKick, pattern.kick, 'kick'], [rowSnare, pattern.snare, 'snare'],
+      [rowHihat, pattern.hihat, 'hihat'], [rowTom, tomEmpty, 'tom'] ]
       .forEach(([row, arr, cls]) => {
         row.innerHTML = '';
         arr.forEach((on) => {
@@ -430,13 +574,13 @@
   }
 
   function highlightStep(step) {
-    [rowKick, rowSnare, rowHihat].forEach(row => {
+    [rowKick, rowSnare, rowHihat, rowTom].forEach(row => {
       Array.from(row.children).forEach((el, i) => el.classList.toggle('playhead', i === step));
     });
   }
 
   function clearPlayhead() {
-    [rowKick, rowSnare, rowHihat].forEach(row => {
+    [rowKick, rowSnare, rowHihat, rowTom].forEach(row => {
       Array.from(row.children).forEach(el => el.classList.remove('playhead'));
     });
   }
@@ -467,6 +611,31 @@
       frequency: 300, envelope: { attack: 0.001, decay: 1.1, release: 0.3 },
       harmonicity: 4.6, modulationIndex: 20, resonance: 4000, octaves: 1.8
     }).connect(drumBus);
+
+    tomSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.06, octaves: 4,
+      envelope: { attack: 0.001, decay: 0.32, sustain: 0 }
+    }).connect(drumBus);
+
+    if (bassBus) bassBus.dispose();
+    bassBus = new Tone.Gain(bassVol.value / 100).toDestination();
+    bassSynth = new Tone.MonoSynth({
+      oscillator: { type: genre === 'electronic' ? 'sawtooth' : 'triangle' },
+      envelope: { attack: 0.015, decay: 0.2, sustain: 0.55, release: 0.25 },
+      filterEnvelope: { attack: 0.01, decay: 0.2, sustain: 0.5, release: 0.3, baseFrequency: 200, octaves: 2.5 }
+    }).connect(bassBus);
+  }
+
+  function triggerDrumHit(type, time, vel) {
+    switch (type) {
+      case 'kick':   kickSynth.triggerAttackRelease('C1', '8n', time, vel); break;
+      case 'snare':  snareSynth.triggerAttackRelease('8n', time, vel); break;
+      case 'hihat':  hihatSynth.triggerAttackRelease('C6', '32n', time, vel); break;
+      case 'crash':  crashSynth.triggerAttackRelease('4n', time, vel); break;
+      case 'tomHi':  tomSynth.triggerAttackRelease('G3', '8n', time, vel); break;
+      case 'tomMid': tomSynth.triggerAttackRelease('D3', '8n', time, vel); break;
+      case 'tomLo':  tomSynth.triggerAttackRelease('A2', '8n', time, vel); break;
+    }
   }
 
   // Pick a Tone synth voice based on GM program number so instruments
@@ -516,26 +685,20 @@
     });
   }
 
-  function buildDrumSequence() {
-    if (drumSeq) { drumSeq.dispose(); drumSeq = null; }
-    barCounter = -1;
-    const subdivision = stepsPerBeat === 2 ? '8n' : '16n';
+  function scheduleDrumAndBassParts(fromTime) {
+    if (drumPart) { drumPart.dispose(); drumPart = null; }
+    if (bassPart) { bassPart.dispose(); bassPart = null; }
 
-    drumSeq = new Tone.Sequence((time, step) => {
-      if (step === 0) barCounter++;
-      if (pattern.kick[step])  kickSynth.triggerAttackRelease('C1', '8n', time, 0.95);
-      if (pattern.snare[step]) snareSynth.triggerAttackRelease('8n', time, 0.85);
-      if (pattern.hihat[step]) {
-        const accent = (step % stepsPerBeat === 0) ? 0.55 : 0.32;
-        hihatSynth.triggerAttackRelease('C6', '32n', time, accent);
-      }
-      if (step === 0 && barCounter > 0 && barCounter % 4 === 0) {
-        crashSynth.triggerAttackRelease('4n', time, 0.6); // accent every 4th bar
-      }
-      Tone.Draw.schedule(() => highlightStep(step), time);
-    }, [...Array(totalSteps).keys()], subdivision);
+    const dEvents = fromTime ? drumEvents.filter(e => e.time >= fromTime - 0.001) : drumEvents;
+    const bEvents = fromTime ? bassEvents.filter(e => e.time >= fromTime - 0.001) : bassEvents;
 
-    drumSeq.start(0);
+    drumPart = new Tone.Part((time, ev) => {
+      triggerDrumHit(ev.type, time, ev.vel);
+    }, dEvents).start(0);
+
+    bassPart = new Tone.Part((time, ev) => {
+      bassSynth.triggerAttackRelease(Tone.Frequency(ev.midi, 'midi').toNote(), ev.duration, time, ev.velocity);
+    }, bEvents).start(0);
   }
 
   // ---------------------------------------------------------------------
@@ -555,21 +718,25 @@
       numerator = ts[0]; denominator = ts[1];
       stepsPerBeat = denominator === 8 ? 2 : 4;
       totalSteps = Math.max(4, Math.round(numerator * stepsPerBeat));
+      secPerStep = (60 / bpm) / 4;              // every step is a 16th note, regardless of meter
+      barDuration = totalSteps * secPerStep;
 
       genre = detectGenre(midi, bpm);
-      pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+      genreSelect.value = genre;
+      genreSelect.disabled = false;
+      generateArrangement();
+      renderGrid();
 
       bpmOut.textContent = `${Math.round(bpm)} BPM`;
       tsOut.textContent = `${numerator}/${denominator}`;
       durOut.textContent = fmtTime(midi.duration);
       tTotal.textContent = fmtTime(midi.duration);
-      genreSelect.value = genre;
-      genreSelect.disabled = false;
-      renderGrid();
 
+      baseFileName = file.name.replace(/\.[^/.]+$/, '') || 'session';
       fileNameEl.textContent = file.name;
       dropLabel.textContent = 'Tap to load a different file';
       playBtn.disabled = false;
+      exportBtn.disabled = false;
       setStatus(`Ready — ${midi.tracks.filter(t => t.notes.length).length} track(s) found. Tap Play to start.`);
     } catch (err) {
       console.error(err);
@@ -589,10 +756,10 @@
   genreSelect.addEventListener('change', () => {
     if (!midi) return;
     genre = genreSelect.value;
-    pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+    generateArrangement();
     renderGrid();
-    if (isPlaying) buildDrumSequence(); // hot-swap pattern without stopping playback
-    setStatus(`Genre set to ${genre}. Drum pattern regenerated.`);
+    if (isPlaying) scheduleDrumAndBassParts(Tone.Transport.seconds); // hot-swap without stopping playback
+    setStatus(`Genre set to ${genre}. Drum + bass parts regenerated.`);
   });
 
   // ---------------------------------------------------------------------
@@ -607,14 +774,15 @@
     buildNoteParts(midi);
     Tone.Transport.bpm.value = bpm;
     Tone.Transport.timeSignature = [numerator, denominator];
-    buildDrumSequence();
+    generateArrangement();
+    scheduleDrumAndBassParts(0);
 
     Tone.Transport.seconds = 0;
     Tone.Transport.start('+0.05');
     isPlaying = true;
     playBtn.disabled = true;
     stopBtn.disabled = false;
-    setStatus('Playing — original MIDI + generated drums, locked to the same clock.');
+    setStatus('Playing — original MIDI + generated drums + bass, locked to the same clock.');
 
     Tone.Transport.scheduleOnce(() => { stop(); }, midi.duration + 0.75);
     tick();
@@ -623,7 +791,8 @@
   function stop() {
     Tone.Transport.stop();
     Tone.Transport.cancel();
-    if (drumSeq) { drumSeq.dispose(); drumSeq = null; }
+    if (drumPart) { drumPart.dispose(); drumPart = null; }
+    if (bassPart) { bassPart.dispose(); bassPart = null; }
     noteParts.forEach(p => { p.part.dispose(); p.synth.dispose(); });
     noteParts = [];
     isPlaying = false;
@@ -642,6 +811,8 @@
     const pct = Math.min(100, (t / midi.duration) * 100);
     progFill.style.width = pct + '%';
     tCur.textContent = fmtTime(t);
+    const stepIdx = Math.floor((t % barDuration) / secPerStep) % totalSteps;
+    highlightStep(stepIdx);
     rafId = requestAnimationFrame(tick);
   }
 
@@ -656,6 +827,61 @@
     drumVal.textContent = drumVol.value + '%';
     if (drumBus) drumBus.gain.rampTo(drumVol.value / 100, 0.05);
   });
+  bassVol.addEventListener('input', () => {
+    bassVal.textContent = bassVol.value + '%';
+    if (bassBus) bassBus.gain.rampTo(bassVol.value / 100, 0.05);
+  });
+
+  // ---------------------------------------------------------------------
+  // Multi-track MIDI export: Original track(s) + Generated Drums + Generated Bass
+  // ---------------------------------------------------------------------
+  function exportMidiFile() {
+    if (!midi) return;
+    if (!drumEvents.length && !bassEvents.length) generateArrangement();
+
+    const outMidi = new Midi();
+    try { outMidi.header.setTempo(bpm); } catch (e) { /* non-fatal */ }
+    try { outMidi.header.timeSignatures.push({ ticks: 0, timeSignature: [numerator, denominator] }); } catch (e) { /* non-fatal */ }
+
+    // Original track(s), skipping the GM percussion channel (we regenerate drums ourselves)
+    midi.tracks.forEach(t => {
+      if (!t.notes.length || t.channel === 9) return;
+      const nt = outMidi.addTrack();
+      nt.name = t.name || 'Original';
+      if (typeof t.channel === 'number') nt.channel = t.channel;
+      t.notes.forEach(n => nt.addNote({ midi: n.midi, time: n.time, duration: Math.max(n.duration, 0.02), velocity: n.velocity }));
+    });
+
+    // Generated drums (GM channel 10 / index 9)
+    const dTrack = outMidi.addTrack();
+    dTrack.name = `Generated Drums (${genre})`;
+    dTrack.channel = 9;
+    drumEvents.forEach(ev => {
+      dTrack.addNote({ midi: GM_DRUM[ev.type], time: ev.time, duration: 0.12, velocity: ev.vel });
+    });
+
+    // Generated bass
+    const bTrack = outMidi.addTrack();
+    bTrack.name = `Generated Bass (${genre})`;
+    bTrack.channel = 1;
+    bassEvents.forEach(ev => {
+      bTrack.addNote({ midi: ev.midi, time: ev.time, duration: ev.duration, velocity: ev.velocity });
+    });
+
+    const bytes = outMidi.toArray();
+    const blob = new Blob([bytes], { type: 'audio/midi' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${baseFileName}_arrangement.mid`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    setStatus('Exported multi-track MIDI — check your Downloads/Files app.');
+  }
+
+  exportBtn.addEventListener('click', exportMidiFile);
 
   // Prevent iOS double-tap zoom on the transport buttons
   document.querySelectorAll('button, .drop').forEach(el => {
