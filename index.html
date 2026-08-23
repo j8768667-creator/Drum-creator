@@ -125,6 +125,36 @@
   }
   select.genre-select:focus{ outline: 2px solid var(--amber); outline-offset: 2px; border-radius: 4px; }
 
+  .led-cell .k{ display:flex; align-items:center; justify-content:space-between; gap:6px; }
+  .mini-reset{
+    all: unset; cursor:pointer; color: var(--ink-dim); font-size: 12px; line-height:1;
+    padding: 2px 4px; border-radius: 4px;
+  }
+  .mini-reset:active{ background: var(--line); color: var(--ink); }
+  .stepper{ display:flex; align-items:center; gap: 4px; margin-top: 2px; }
+  .mini-step{
+    all: unset; cursor:pointer; text-align:center;
+    width: 30px; height: 30px; flex: 0 0 30px;
+    border-radius: 8px; background:#0F0E0C; border: 1px solid var(--line);
+    color: var(--led); font-family: var(--font-display); font-weight:700; font-size: 16px;
+  }
+  .mini-step:active{ background: var(--line); }
+  input.v-input{
+    -webkit-appearance:none; appearance:none;
+    background: transparent; border: none; color: var(--led);
+    font-family: var(--font-display); font-weight:700;
+    font-size: clamp(15px, 3.6vw, 19px); width: 100%; min-width:0;
+    text-align:center; padding:0;
+  }
+  input.v-input:disabled, select.v-input:disabled{ opacity:.4; }
+  select.v-input{
+    -webkit-appearance:none; appearance:none;
+    background: #0F0E0C; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--led); font-family: var(--font-display); font-weight:700;
+    font-size: clamp(14px, 3.4vw, 18px); padding: 4px 2px; text-align:center;
+  }
+  .ts-slash{ color: var(--ink-dim); font-weight:700; }
+
   /* ---- Step visualizer ---- */
   .grid-wrap{
     background:#0F0E0C; border:1px solid var(--line); border-radius: 12px;
@@ -137,12 +167,15 @@
   .steps{ display:flex; gap: 4px; flex: 1 1 auto; }
   .step{
     flex: 1 1 auto;
-    min-width: 12px;
-    height: 16px;
-    border-radius: 3px;
+    min-width: 16px;
+    height: 30px;
+    border-radius: 4px;
     background: #211F1A;
     border: 1px solid var(--line);
+    cursor: pointer;
+    touch-action: manipulation;
   }
+  .step:active{ transform: scale(0.9); }
   .step.on.kick{ background: color-mix(in srgb, var(--kick) 35%, #211F1A); border-color: var(--kick); }
   .step.on.snare{ background: color-mix(in srgb, var(--snare) 35%, #211F1A); border-color: var(--snare); }
   .step.on.hihat{ background: color-mix(in srgb, var(--hihat) 35%, #211F1A); border-color: var(--hihat); }
@@ -153,6 +186,10 @@
   .step.on.hihat.playhead{ background: var(--hihat); }
   .step.on.tom.playhead{ background: var(--tom); }
   .grid-note{ font-size: 10px; color: var(--ink-dim); margin-top: 8px; line-height: 1.5; }
+  button.reset-pattern{
+    margin-top: 10px; width:100%; background: transparent; border-color: var(--line);
+    color: var(--ink-dim); font-size: 12px; padding: 10px; min-height: 40px;
+  }
 
   /* ---- Transport ---- */
   .transport{ display:flex; gap: 10px; margin-bottom: 14px; }
@@ -235,8 +272,22 @@
   </label>
 
   <div class="readout">
-    <div class="led-cell"><div class="k">Tempo</div><div class="v" id="bpmOut">— BPM</div></div>
-    <div class="led-cell"><div class="k">Time Sig.</div><div class="v" id="tsOut">—/—</div></div>
+    <div class="led-cell">
+      <div class="k">Tempo <button class="mini-reset" id="resetBpmBtn" title="Reset to detected tempo">↺</button></div>
+      <div class="stepper">
+        <button class="mini-step" id="bpmDown">−</button>
+        <input type="number" class="v-input" id="bpmInput" min="20" max="300" step="1" placeholder="—" disabled>
+        <button class="mini-step" id="bpmUp">+</button>
+      </div>
+    </div>
+    <div class="led-cell">
+      <div class="k">Time Sig. <button class="mini-reset" id="resetTsBtn" title="Reset to detected meter">↺</button></div>
+      <div class="stepper">
+        <select class="v-input ts-select" id="tsNum" disabled></select>
+        <span class="ts-slash">/</span>
+        <select class="v-input ts-select" id="tsDen" disabled></select>
+      </div>
+    </div>
     <div class="led-cell genre">
       <div class="k">Genre</div>
       <select class="genre-select" id="genreSelect" disabled>
@@ -257,7 +308,8 @@
     <div class="row"><div class="rlabel" style="color:var(--snare)">SNARE</div><div class="steps" id="rowSnare"></div></div>
     <div class="row"><div class="rlabel" style="color:var(--hihat)">HI-HAT</div><div class="steps" id="rowHihat"></div></div>
     <div class="row"><div class="rlabel" style="color:var(--tom)">TOM</div><div class="steps" id="rowTom"></div></div>
-    <div class="grid-note">Shown: the repeating base groove. A tom fill + crash lands every 4th bar; the bass line follows the chord roots detected in the original MIDI and isn't step-grid shaped, so it plays in the mix but isn't drawn here.</div>
+    <div class="grid-note">Tap any square to add or remove a hit — edits apply immediately, even mid-playback. A tom fill + crash still lands every 4th bar on top of whatever you've drawn here. The bass line follows detected chord roots and isn't step-grid shaped, so it isn't drawn.</div>
+    <button class="reset-pattern" id="resetPatternBtn">↺ Reset pattern to genre default</button>
   </div>
 
   <div class="transport">
@@ -305,11 +357,13 @@
   let baseFileName = 'session';
   let bpm = 120;
   let numerator = 4, denominator = 4;
+  let detectedBpm = 120;
+  let detectedNumerator = 4, detectedDenominator = 4;
   let stepsPerBeat = 4;       // steps (always 16th notes) per "beat" (denominator's note value)
   let totalSteps = 16;        // steps in one bar
   let secPerStep = 0.125;     // seconds per 16th note, derived from bpm
   let barDuration = 2;        // seconds per bar
-  let pattern = { kick: [], snare: [], hihat: [] }; // one-bar template, used for the preview grid
+  let pattern = { kick: [], snare: [], hihat: [], tom: [] }; // one-bar template, editable by tap
   let genre = 'pop';
 
   let drumEvents = [];        // full-song absolute-time drum hits, also used for MIDI export
@@ -331,8 +385,6 @@
   const fileInput  = document.getElementById('fileInput');
   const dropLabel  = document.getElementById('dropLabel');
   const fileNameEl = document.getElementById('fileNameDisplay');
-  const bpmOut     = document.getElementById('bpmOut');
-  const tsOut      = document.getElementById('tsOut');
   const durOut     = document.getElementById('durOut');
   const genreSelect= document.getElementById('genreSelect');
   const playBtn    = document.getElementById('playBtn');
@@ -352,6 +404,14 @@
   const bassVol    = document.getElementById('bassVol');
   const bassVal    = document.getElementById('bassVal');
   const exportBtn  = document.getElementById('exportBtn');
+  const bpmInput   = document.getElementById('bpmInput');
+  const bpmUp      = document.getElementById('bpmUp');
+  const bpmDown    = document.getElementById('bpmDown');
+  const resetBpmBtn= document.getElementById('resetBpmBtn');
+  const tsNum      = document.getElementById('tsNum');
+  const tsDen      = document.getElementById('tsDen');
+  const resetTsBtn = document.getElementById('resetTsBtn');
+  const resetPatternBtn = document.getElementById('resetPatternBtn');
 
   const fmtTime = s => {
     s = Math.max(0, s|0);
@@ -441,7 +501,7 @@
         for (let s = 0; s < steps; s += Math.max(1, Math.round(spb/2))) hihat[s] = true; // 8ths
         break;
     }
-    return { kick, snare, hihat };
+    return { kick, snare, hihat, tom: new Array(steps).fill(false) };
   }
 
   // ---------------------------------------------------------------------
@@ -505,16 +565,18 @@
   }
 
   // ---------------------------------------------------------------------
-  // Full-song event lists, shared by live playback AND the MIDI exporter
-  // ---------------------------------------------------------------------
-  function generateArrangement() {
-    if (!midi) return;
-    const duration = midi.duration || 0;
-    const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
-    const basePattern = buildPattern(genre, totalSteps, stepsPerBeat);
-    pattern = basePattern; // drives the preview grid
+  // Ratio between the tempo detected in the file and whatever tempo is
+  // currently dialed in — used to time-stretch the original MIDI so it
+  // stays glued to the drum/bass grid when the user changes the tempo.
+  function tempoScale() { return bpm ? (detectedBpm / bpm) : 1; }
+  function songDuration() { return midi ? (midi.duration || 0) * tempoScale() : 0; }
 
-    // --- drums: base groove every bar, tom fill + crash every 4th bar ---
+  // Drums: uses whatever is currently in `pattern` (genre default OR the
+  // user's manual taps) — does NOT regenerate the pattern itself.
+  function rebuildDrumEventsOnly() {
+    if (!midi) return;
+    const duration = songDuration();
+    const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
     const dEvents = [];
     const tomCycle = ['tomHi', 'tomMid', 'tomLo'];
     for (let b = 0; b < numBars; b++) {
@@ -529,16 +591,26 @@
           const localIdx = step - (totalSteps - stepsPerBeat);
           dEvents.push({ time, type: tomCycle[localIdx % 3], vel: 0.85 });
         } else {
-          if (basePattern.kick[step])  dEvents.push({ time, type: 'kick',  vel: 0.95 });
-          if (basePattern.snare[step]) dEvents.push({ time, type: 'snare', vel: 0.85 });
-          if (basePattern.hihat[step]) dEvents.push({ time, type: 'hihat', vel: (step % stepsPerBeat === 0) ? 0.55 : 0.32 });
+          if (pattern.kick[step])  dEvents.push({ time, type: 'kick',  vel: 0.95 });
+          if (pattern.snare[step]) dEvents.push({ time, type: 'snare', vel: 0.85 });
+          if (pattern.hihat[step]) dEvents.push({ time, type: 'hihat', vel: (step % stepsPerBeat === 0) ? 0.55 : 0.32 });
+          if (pattern.tom[step])   dEvents.push({ time, type: 'tomMid', vel: 0.8 });
         }
       }
     }
     drumEvents = dEvents;
+  }
 
-    // --- bass: chord-root-aware groove, genre-specific rhythm ---
-    const roots = detectRootProgression(midi, barDuration, numBars);
+  // Bass: chord roots are detected against the ORIGINAL (detected-tempo)
+  // bar length, since the harmony lives in the file regardless of the
+  // tempo the user dials in — then placed at the current (scaled) timing.
+  function rebuildBassEventsOnly() {
+    if (!midi) return;
+    const duration = songDuration();
+    const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
+    const origSecPerStep = (60 / detectedBpm) / 4;
+    const origBarDuration = totalSteps * origSecPerStep;
+    const roots = detectRootProgression(midi, origBarDuration, numBars);
     const baseOctave = genre === 'electronic' ? 28 : (genre === 'jazz' ? 40 : 36);
     const groove = buildBassGroove(genre, totalSteps, stepsPerBeat);
     const bEvents = [];
@@ -559,18 +631,36 @@
     bassEvents = bEvents;
   }
 
+  // Full regenerate — pass resetPattern=true after a genre or meter change,
+  // omit it (or pass false) to keep whatever the user has manually edited.
+  function generateArrangement(resetPattern) {
+    if (!midi) return;
+    if (resetPattern) pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+    rebuildDrumEventsOnly();
+    rebuildBassEventsOnly();
+  }
+
   function renderGrid() {
-    const tomEmpty = new Array(totalSteps).fill(false); // toms only appear in fills, not the base loop
     [ [rowKick, pattern.kick, 'kick'], [rowSnare, pattern.snare, 'snare'],
-      [rowHihat, pattern.hihat, 'hihat'], [rowTom, tomEmpty, 'tom'] ]
+      [rowHihat, pattern.hihat, 'hihat'], [rowTom, pattern.tom, 'tom'] ]
       .forEach(([row, arr, cls]) => {
         row.innerHTML = '';
-        arr.forEach((on) => {
+        arr.forEach((on, i) => {
           const d = document.createElement('div');
           d.className = 'step' + (on ? ` on ${cls}` : '');
+          d.addEventListener('click', () => toggleStep(cls, i, d));
           row.appendChild(d);
         });
       });
+  }
+
+  function toggleStep(rowKey, index, el) {
+    if (!midi) return;
+    pattern[rowKey][index] = !pattern[rowKey][index];
+    el.classList.toggle('on', pattern[rowKey][index]);
+    el.classList.toggle(rowKey, pattern[rowKey][index]);
+    rebuildDrumEventsOnly();
+    if (isPlaying) scheduleDrumPart(Tone.Transport.seconds);
   }
 
   function highlightStep(step) {
@@ -670,35 +760,40 @@
 
       const program = track.instrument ? track.instrument.number : undefined;
       const synth = synthForProgram(program);
-      const isMono = synth instanceof Tone.MonoSynth;
 
       const part = new Tone.Part((time, note) => {
-        if (isMono) {
-          synth.triggerAttackRelease(note.name, note.duration, time, note.velocity);
-        } else {
-          synth.triggerAttackRelease(note.name, note.duration, time, note.velocity);
-        }
-      }, track.notes.map(n => ({ time: n.time, name: n.name, duration: Math.max(n.duration, 0.03), velocity: n.velocity })));
+        synth.triggerAttackRelease(note.name, note.duration, time, note.velocity);
+      }, track.notes.map(n => ({
+        time: n.time * tempoScale(),
+        name: n.name,
+        duration: Math.max(n.duration * tempoScale(), 0.03),
+        velocity: n.velocity
+      })));
 
       part.start(0);
       noteParts.push({ part, synth });
     });
   }
 
-  function scheduleDrumAndBassParts(fromTime) {
+  function scheduleDrumPart(fromTime) {
     if (drumPart) { drumPart.dispose(); drumPart = null; }
-    if (bassPart) { bassPart.dispose(); bassPart = null; }
-
     const dEvents = fromTime ? drumEvents.filter(e => e.time >= fromTime - 0.001) : drumEvents;
-    const bEvents = fromTime ? bassEvents.filter(e => e.time >= fromTime - 0.001) : bassEvents;
-
     drumPart = new Tone.Part((time, ev) => {
       triggerDrumHit(ev.type, time, ev.vel);
     }, dEvents).start(0);
+  }
 
+  function scheduleBassPart(fromTime) {
+    if (bassPart) { bassPart.dispose(); bassPart = null; }
+    const bEvents = fromTime ? bassEvents.filter(e => e.time >= fromTime - 0.001) : bassEvents;
     bassPart = new Tone.Part((time, ev) => {
       bassSynth.triggerAttackRelease(Tone.Frequency(ev.midi, 'midi').toNote(), ev.duration, time, ev.velocity);
     }, bEvents).start(0);
+  }
+
+  function scheduleDrumAndBassParts(fromTime) {
+    scheduleDrumPart(fromTime);
+    scheduleBassPart(fromTime);
   }
 
   // ---------------------------------------------------------------------
@@ -716,6 +811,8 @@
       bpm = (midi.header.tempos[0] && midi.header.tempos[0].bpm) || 120;
       const ts = midi.header.timeSignatures[0] ? midi.header.timeSignatures[0].timeSignature : [4, 4];
       numerator = ts[0]; denominator = ts[1];
+      detectedBpm = bpm;
+      detectedNumerator = numerator; detectedDenominator = denominator;
       stepsPerBeat = denominator === 8 ? 2 : 4;
       totalSteps = Math.max(4, Math.round(numerator * stepsPerBeat));
       secPerStep = (60 / bpm) / 4;              // every step is a 16th note, regardless of meter
@@ -724,13 +821,16 @@
       genre = detectGenre(midi, bpm);
       genreSelect.value = genre;
       genreSelect.disabled = false;
-      generateArrangement();
+      generateArrangement(true);
       renderGrid();
 
-      bpmOut.textContent = `${Math.round(bpm)} BPM`;
-      tsOut.textContent = `${numerator}/${denominator}`;
-      durOut.textContent = fmtTime(midi.duration);
-      tTotal.textContent = fmtTime(midi.duration);
+      bpmInput.value = Math.round(bpm);
+      bpmInput.disabled = false;
+      tsNum.value = String(numerator);
+      tsDen.value = String(denominator);
+      tsNum.disabled = false; tsDen.disabled = false;
+      durOut.textContent = fmtTime(songDuration());
+      tTotal.textContent = fmtTime(songDuration());
 
       baseFileName = file.name.replace(/\.[^/.]+$/, '') || 'session';
       fileNameEl.textContent = file.name;
@@ -756,11 +856,82 @@
   genreSelect.addEventListener('change', () => {
     if (!midi) return;
     genre = genreSelect.value;
-    generateArrangement();
+    generateArrangement(true); // genre switch replaces the drum pattern with the new default
     renderGrid();
     if (isPlaying) scheduleDrumAndBassParts(Tone.Transport.seconds); // hot-swap without stopping playback
     setStatus(`Genre set to ${genre}. Drum + bass parts regenerated.`);
   });
+
+  resetPatternBtn.addEventListener('click', () => {
+    if (!midi) return;
+    pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+    rebuildDrumEventsOnly();
+    renderGrid();
+    if (isPlaying) scheduleDrumPart(Tone.Transport.seconds);
+    setStatus('Pattern reset to the genre default.');
+  });
+
+  // ---------------------------------------------------------------------
+  // Tempo & time signature controls
+  // ---------------------------------------------------------------------
+  function populateTsSelects() {
+    for (let n = 1; n <= 16; n++) {
+      const o = document.createElement('option'); o.value = n; o.textContent = n; tsNum.appendChild(o);
+    }
+    [1, 2, 4, 8, 16, 32].forEach(d => {
+      const o = document.createElement('option'); o.value = d; o.textContent = d; tsDen.appendChild(o);
+    });
+  }
+  populateTsSelects();
+
+  function recalcTiming() {
+    stepsPerBeat = denominator === 8 ? 2 : 4;
+    totalSteps = Math.max(4, Math.round(numerator * stepsPerBeat));
+    secPerStep = (60 / bpm) / 4;
+    barDuration = totalSteps * secPerStep;
+  }
+
+  function applyTempo(newBpm) {
+    if (!midi) return;
+    newBpm = Math.max(20, Math.min(300, Math.round(newBpm)));
+    bpm = newBpm;
+    bpmInput.value = bpm;
+    recalcTiming(); // meter unchanged, so `pattern`'s step count is still valid — keep manual edits
+    generateArrangement(false);
+    renderGrid();
+    durOut.textContent = fmtTime(songDuration());
+    tTotal.textContent = fmtTime(songDuration());
+    if (isPlaying) {
+      Tone.Transport.bpm.value = bpm;
+      buildNoteParts(midi);              // re-stretch original notes to the new tempo
+      scheduleDrumAndBassParts(Tone.Transport.seconds);
+    }
+    setStatus(`Tempo set to ${bpm} BPM.`);
+  }
+
+  function applyTimeSignature(newNum, newDen) {
+    if (!midi) return;
+    numerator = newNum; denominator = newDen;
+    recalcTiming(); // step count changes shape, so the hand-edited pattern is rebuilt from the genre default
+    generateArrangement(true);
+    renderGrid();
+    durOut.textContent = fmtTime(songDuration());
+    tTotal.textContent = fmtTime(songDuration());
+    if (isPlaying) {
+      Tone.Transport.timeSignature = [numerator, denominator];
+      scheduleDrumAndBassParts(Tone.Transport.seconds);
+    }
+    setStatus(`Time signature set to ${numerator}/${denominator}. Drum pattern was regenerated for the new bar length.`);
+  }
+
+  bpmUp.addEventListener('click', () => applyTempo((parseInt(bpmInput.value, 10) || bpm) + 1));
+  bpmDown.addEventListener('click', () => applyTempo((parseInt(bpmInput.value, 10) || bpm) - 1));
+  bpmInput.addEventListener('change', () => applyTempo(parseInt(bpmInput.value, 10) || bpm));
+  resetBpmBtn.addEventListener('click', () => applyTempo(detectedBpm));
+
+  tsNum.addEventListener('change', () => applyTimeSignature(parseInt(tsNum.value, 10), denominator));
+  tsDen.addEventListener('change', () => applyTimeSignature(numerator, parseInt(tsDen.value, 10)));
+  resetTsBtn.addEventListener('click', () => applyTimeSignature(detectedNumerator, detectedDenominator));
 
   // ---------------------------------------------------------------------
   // Transport controls
@@ -784,7 +955,7 @@
     stopBtn.disabled = false;
     setStatus('Playing — original MIDI + generated drums + bass, locked to the same clock.');
 
-    Tone.Transport.scheduleOnce(() => { stop(); }, midi.duration + 0.75);
+    Tone.Transport.scheduleOnce(() => { stop(); }, songDuration() + 0.75);
     tick();
   }
 
@@ -808,7 +979,7 @@
   function tick() {
     if (!isPlaying || !midi) return;
     const t = Tone.Transport.seconds;
-    const pct = Math.min(100, (t / midi.duration) * 100);
+    const pct = Math.min(100, (t / songDuration()) * 100);
     progFill.style.width = pct + '%';
     tCur.textContent = fmtTime(t);
     const stepIdx = Math.floor((t % barDuration) / secPerStep) % totalSteps;
@@ -837,19 +1008,23 @@
   // ---------------------------------------------------------------------
   function exportMidiFile() {
     if (!midi) return;
-    if (!drumEvents.length && !bassEvents.length) generateArrangement();
+    if (!drumEvents.length && !bassEvents.length) generateArrangement(false);
 
+    const scale = tempoScale();
     const outMidi = new Midi();
     try { outMidi.header.setTempo(bpm); } catch (e) { /* non-fatal */ }
     try { outMidi.header.timeSignatures.push({ ticks: 0, timeSignature: [numerator, denominator] }); } catch (e) { /* non-fatal */ }
 
-    // Original track(s), skipping the GM percussion channel (we regenerate drums ourselves)
+    // Original track(s), time-stretched to match the chosen tempo — skipping the
+    // GM percussion channel (we regenerate drums ourselves)
     midi.tracks.forEach(t => {
       if (!t.notes.length || t.channel === 9) return;
       const nt = outMidi.addTrack();
       nt.name = t.name || 'Original';
       if (typeof t.channel === 'number') nt.channel = t.channel;
-      t.notes.forEach(n => nt.addNote({ midi: n.midi, time: n.time, duration: Math.max(n.duration, 0.02), velocity: n.velocity }));
+      t.notes.forEach(n => nt.addNote({
+        midi: n.midi, time: n.time * scale, duration: Math.max(n.duration * scale, 0.02), velocity: n.velocity
+      }));
     });
 
     // Generated drums (GM channel 10 / index 9)
