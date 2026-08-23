@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Session Drummer — Adaptive MIDI Accompaniment</title>
+
+<!-- Tone.js: audio engine + Web Audio scheduling -->
+<script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+<!-- @tonejs/midi: parses the uploaded .mid file into notes/tempo/time-signature -->
+<script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+
+<style>
+  :root{
+    --ink:        #E9E4D8;
+    --ink-dim:    #9B9585;
+    --panel:      #1B1A17;
+    --panel-2:    #232019;
+    --line:       #3A362C;
+    --led:        #7CF29C;
+    --led-dim:    #2E4A38;
+    --amber:      #E8A33D;
+    --red:        #E1553C;
+    --kick:       #E1553C;
+    --snare:      #E8A33D;
+    --hihat:      #7CF29C;
+    --font-display: 'Space Grotesk', 'Avenir Next', system-ui, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin:0; padding:0;
+    background: #0F0E0C;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    min-height: 100dvh;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+  }
+  body{
+    padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    display:flex; justify-content:center;
+  }
+
+  @font-face{ /* graceful fallback stack only — no external font fetch required */ }
+
+  .rack{
+    width: 100%;
+    max-width: 880px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    padding: 20px 20px 24px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.03);
+  }
+
+  header.hdr{
+    display:flex; align-items:baseline; justify-content:space-between;
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 14px; margin-bottom: 18px;
+    flex-wrap: wrap; gap: 6px;
+  }
+  .eyebrow{
+    font-size: 10.5px; letter-spacing: .18em; color: var(--ink-dim); text-transform: uppercase;
+  }
+  h1{
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: clamp(22px, 4vw, 30px);
+    margin: 2px 0 0;
+    letter-spacing: -0.01em;
+  }
+  .hdr small{ color: var(--ink-dim); font-size: 11px; }
+
+  /* ---- Drop / upload panel ---- */
+  .drop{
+    border: 1.5px dashed var(--line);
+    border-radius: 14px;
+    background: var(--panel-2);
+    padding: 22px 16px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s ease, background .15s ease;
+  }
+  .drop.dragover, .drop:active{ border-color: var(--led); background:#26241d; }
+  .drop input{ display:none; }
+  .drop .lbl{ font-family: var(--font-display); font-size: 16px; font-weight: 600; }
+  .drop .sub{ color: var(--ink-dim); font-size: 12px; margin-top: 4px; }
+  .filename{ color: var(--led); font-size: 12.5px; margin-top: 8px; word-break: break-all; }
+
+  /* ---- LED readout strip ---- */
+  .readout{
+    display:grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin: 18px 0;
+  }
+  .led-cell{
+    background: #0F0E0C;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 10px 12px;
+    min-width: 0;
+  }
+  .led-cell .k{ font-size: 9.5px; letter-spacing: .12em; color: var(--ink-dim); text-transform: uppercase; }
+  .led-cell .v{
+    font-family: var(--font-display);
+    font-size: clamp(16px, 4vw, 22px);
+    color: var(--led);
+    font-weight: 700;
+    margin-top: 2px;
+    white-space: nowrap; overflow:hidden; text-overflow: ellipsis;
+  }
+  .led-cell.genre .v{ color: var(--amber); text-transform: capitalize; }
+
+  select.genre-select{
+    -webkit-appearance:none; appearance:none;
+    background: transparent; border: none; color: var(--amber);
+    font-family: var(--font-display); font-weight:700;
+    font-size: clamp(16px, 4vw, 22px); width:100%;
+    padding: 0; margin-top:2px; text-transform: capitalize;
+  }
+  select.genre-select:focus{ outline: 2px solid var(--amber); outline-offset: 2px; border-radius: 4px; }
+
+  /* ---- Step visualizer ---- */
+  .grid-wrap{
+    background:#0F0E0C; border:1px solid var(--line); border-radius: 12px;
+    padding: 14px 12px; margin-bottom: 16px; overflow-x:auto;
+  }
+  .row{ display:flex; align-items:center; gap: 6px; margin: 5px 0; }
+  .row .rlabel{
+    width: 46px; flex: 0 0 46px; font-size: 10px; color: var(--ink-dim); letter-spacing:.05em;
+  }
+  .steps{ display:flex; gap: 4px; flex: 1 1 auto; }
+  .step{
+    flex: 1 1 auto;
+    min-width: 12px;
+    height: 16px;
+    border-radius: 3px;
+    background: #211F1A;
+    border: 1px solid var(--line);
+  }
+  .step.on.kick{ background: color-mix(in srgb, var(--kick) 35%, #211F1A); border-color: var(--kick); }
+  .step.on.snare{ background: color-mix(in srgb, var(--snare) 35%, #211F1A); border-color: var(--snare); }
+  .step.on.hihat{ background: color-mix(in srgb, var(--hihat) 35%, #211F1A); border-color: var(--hihat); }
+  .step.playhead{ outline: 2px solid var(--ink); outline-offset: 1px; }
+  .step.on.kick.playhead{ background: var(--kick); }
+  .step.on.snare.playhead{ background: var(--snare); }
+  .step.on.hihat.playhead{ background: var(--hihat); }
+
+  /* ---- Transport ---- */
+  .transport{ display:flex; gap: 10px; margin-bottom: 14px; }
+  button{
+    font-family: var(--font-display);
+    font-weight: 700;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--ink);
+    padding: 14px 16px;
+    font-size: 15px;
+    min-height: 50px;
+    cursor: pointer;
+    flex: 1;
+    transition: transform .08s ease, background .12s ease, border-color .12s ease;
+  }
+  button:active{ transform: scale(0.97); }
+  button.primary{ background: var(--led); color:#0F1A12; border-color: var(--led); }
+  button.stop{ background: var(--red); color:#2A0E08; border-color: var(--red); }
+  button:disabled{ opacity: .35; cursor: not-allowed; transform:none; }
+  button.ghost{ flex: 0 0 auto; background: transparent; }
+
+  /* ---- Mixer ---- */
+  .mixer{ display:grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 6px; }
+  .fader{ background: var(--panel-2); border:1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
+  .fader .k{ font-size: 10px; letter-spacing:.1em; color: var(--ink-dim); text-transform:uppercase; display:flex; justify-content:space-between; }
+  .fader .k span.val{ color: var(--ink); }
+  input[type=range]{
+    -webkit-appearance:none; appearance:none;
+    width:100%; height: 34px; background: transparent; margin-top:4px;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height: 6px; border-radius: 3px; background: var(--line);
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; appearance:none;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: var(--led); border: 2px solid #0F0E0C;
+    margin-top: -9px;
+  }
+
+  .progress{ height: 5px; border-radius: 3px; background: var(--line); margin: 14px 0 4px; overflow:hidden; }
+  .progress-fill{ height:100%; width:0%; background: var(--led); transition: width .1s linear; }
+  .time-labels{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--ink-dim); }
+
+  .status{ font-size: 11.5px; color: var(--ink-dim); text-align:center; margin-top: 14px; min-height: 14px; }
+  .status.err{ color: var(--red); }
+
+  footer.note{
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+    font-size: 10.5px; color: var(--ink-dim); line-height: 1.5;
+  }
+
+  @media (max-width: 420px){
+    .readout{ grid-template-columns: repeat(2, 1fr); }
+    .mixer{ grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="rack">
+  <header class="hdr">
+    <div>
+      <div class="eyebrow">Web Audio · MIDI-Locked</div>
+      <h1>Session Drummer</h1>
+    </div>
+    <small>iPad-optimized · no install</small>
+  </header>
+
+  <label class="drop" id="dropZone">
+    <input type="file" id="fileInput" accept=".mid,.midi,audio/midi,audio/x-midi">
+    <div class="lbl" id="dropLabel">Tap to load a .mid file</div>
+    <div class="sub">or drop one here — tempo, time signature and genre are detected automatically</div>
+    <div class="filename" id="fileNameDisplay"></div>
+  </label>
+
+  <div class="readout">
+    <div class="led-cell"><div class="k">Tempo</div><div class="v" id="bpmOut">— BPM</div></div>
+    <div class="led-cell"><div class="k">Time Sig.</div><div class="v" id="tsOut">—/—</div></div>
+    <div class="led-cell genre">
+      <div class="k">Genre</div>
+      <select class="genre-select" id="genreSelect" disabled>
+        <option value="">—</option>
+        <option value="rock">Rock</option>
+        <option value="pop">Pop</option>
+        <option value="electronic">Electronic</option>
+        <option value="hiphop">Hip-Hop</option>
+        <option value="jazz">Jazz</option>
+        <option value="ballad">Ballad</option>
+      </select>
+    </div>
+    <div class="led-cell"><div class="k">Duration</div><div class="v" id="durOut">0:00</div></div>
+  </div>
+
+  <div class="grid-wrap">
+    <div class="row"><div class="rlabel" style="color:var(--kick)">KICK</div><div class="steps" id="rowKick"></div></div>
+    <div class="row"><div class="rlabel" style="color:var(--snare)">SNARE</div><div class="steps" id="rowSnare"></div></div>
+    <div class="row"><div class="rlabel" style="color:var(--hihat)">HI-HAT</div><div class="steps" id="rowHihat"></div></div>
+  </div>
+
+  <div class="transport">
+    <button class="primary" id="playBtn" disabled>▶ Play</button>
+    <button class="stop" id="stopBtn" disabled>■ Stop</button>
+  </div>
+
+  <div class="mixer">
+    <div class="fader">
+      <div class="k">Original MIDI <span class="val" id="origVal">80%</span></div>
+      <input type="range" id="origVol" min="0" max="100" value="80">
+    </div>
+    <div class="fader">
+      <div class="k">Drum Track <span class="val" id="drumVal">85%</span></div>
+      <input type="range" id="drumVol" min="0" max="100" value="85">
+    </div>
+  </div>
+
+  <div class="progress"><div class="progress-fill" id="progFill"></div></div>
+  <div class="time-labels"><span id="tCur">0:00</span><span id="tTotal">0:00</span></div>
+
+  <div class="status" id="statusLine">Load a MIDI file to begin.</div>
+
+  <footer class="note">
+    Genre is inferred from tempo, note density and instrument program numbers — override it any time with the
+    dropdown above and the drum pattern regenerates instantly. On iPhone/iPad, audio unlocks on your first tap,
+    so use the Play button rather than autoplay.
+  </footer>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------
+  let midi = null;
+  let bpm = 120;
+  let numerator = 4, denominator = 4;
+  let stepsPerBeat = 4;      // 16th notes per beat (8th notes for compound /8 meters)
+  let totalSteps = 16;       // steps in one bar
+  let pattern = { kick: [], snare: [], hihat: [] };
+  let genre = 'pop';
+  let barCounter = -1;
+
+  let originalBus = null, drumBus = null;
+  let kickSynth, snareSynth, hihatSynth, crashSynth;
+  let noteParts = [];        // Tone.Part instances for the original MIDI
+  let drumSeq = null;
+  let rafId = null;
+  let isPlaying = false;
+
+  // ---------------------------------------------------------------------
+  // DOM refs
+  // ---------------------------------------------------------------------
+  const dropZone   = document.getElementById('dropZone');
+  const fileInput  = document.getElementById('fileInput');
+  const dropLabel  = document.getElementById('dropLabel');
+  const fileNameEl = document.getElementById('fileNameDisplay');
+  const bpmOut     = document.getElementById('bpmOut');
+  const tsOut      = document.getElementById('tsOut');
+  const durOut     = document.getElementById('durOut');
+  const genreSelect= document.getElementById('genreSelect');
+  const playBtn    = document.getElementById('playBtn');
+  const stopBtn    = document.getElementById('stopBtn');
+  const origVol    = document.getElementById('origVol');
+  const drumVol    = document.getElementById('drumVol');
+  const origVal    = document.getElementById('origVal');
+  const drumVal    = document.getElementById('drumVal');
+  const progFill   = document.getElementById('progFill');
+  const tCur       = document.getElementById('tCur');
+  const tTotal     = document.getElementById('tTotal');
+  const statusLine = document.getElementById('statusLine');
+  const rowKick    = document.getElementById('rowKick');
+  const rowSnare   = document.getElementById('rowSnare');
+  const rowHihat   = document.getElementById('rowHihat');
+
+  const fmtTime = s => {
+    s = Math.max(0, s|0);
+    return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  };
+  const setStatus = (msg, isErr=false) => {
+    statusLine.textContent = msg;
+    statusLine.classList.toggle('err', !!isErr);
+  };
+
+  // ---------------------------------------------------------------------
+  // Genre detection (rule-based heuristic over tempo / density / programs)
+  // ---------------------------------------------------------------------
+  function detectGenre(m, bpmVal) {
+    let noteCount = 0, velSum = 0;
+    const programs = new Set();
+    m.tracks.forEach(t => {
+      if (t.instrument) programs.add(t.instrument.number);
+      t.notes.forEach(n => { noteCount++; velSum += n.velocity; });
+    });
+    const dur = Math.max(m.duration || 1, 1);
+    const density = noteCount / dur;                 // notes per second
+    const hasSynthLead   = [...programs].some(p => p >= 80 && p <= 103);
+    const hasDistGuitar  = [...programs].some(p => p === 29 || p === 30);
+    const hasOrganOrSax  = [...programs].some(p => (p >= 16 && p <= 23) || (p >= 64 && p <= 67));
+    const hasStrings     = [...programs].some(p => p >= 40 && p <= 51);
+    const hasAcousticPno = [...programs].some(p => p >= 0 && p <= 3);
+
+    if (bpmVal <= 72 && density < 3) return 'ballad';
+    if (bpmVal >= 122 && (hasSynthLead || density > 6)) return 'electronic';
+    if (hasOrganOrSax && bpmVal >= 78 && bpmVal <= 145) return 'jazz';
+    if (density > 4 && bpmVal >= 70 && bpmVal <= 102 && !hasStrings) return 'hiphop';
+    if (hasDistGuitar || (bpmVal >= 108 && bpmVal <= 165)) return 'rock';
+    if (hasAcousticPno && bpmVal < 100) return 'pop';
+    return 'pop';
+  }
+
+  // ---------------------------------------------------------------------
+  // Drum pattern generator — genre-adaptive, sized to the bar's step grid
+  // ---------------------------------------------------------------------
+  function buildPattern(g, steps, spb) {
+    const kick  = new Array(steps).fill(false);
+    const snare = new Array(steps).fill(false);
+    const hihat = new Array(steps).fill(false);
+    const beats = Math.max(1, Math.round(steps / spb));
+    const at = b => Math.min(steps - 1, b * spb);
+
+    switch (g) {
+      case 'electronic':
+        for (let b = 0; b < beats; b++) kick[at(b)] = true;                // four-on-the-floor
+        for (let b = 1; b < beats; b += 2) snare[at(b)] = true;            // backbeat 2 & 4
+        for (let s = 0; s < steps; s++) hihat[s] = true;                   // constant 16ths
+        break;
+
+      case 'hiphop':
+        kick[0] = true;
+        if (steps > spb + Math.floor(spb/2)) kick[spb + Math.floor(spb/2)] = true; // syncopated push
+        if (steps > spb*2 + Math.floor(spb*0.75)) kick[spb*2 + Math.floor(spb*0.75)] = true;
+        for (let b = 1; b < beats; b += 2) snare[at(b)] = true;
+        for (let s = 0; s < steps; s += 2) hihat[s] = true;                // laid-back 8ths
+        break;
+
+      case 'jazz':
+        for (let b = 0; b < beats; b++) {
+          hihat[at(b)] = true;
+          const skip = at(b) + Math.floor(spb * 0.66);
+          if (skip < steps) hihat[skip] = true;                            // swung ride feel
+        }
+        kick[0] = true;
+        if (beats > 2) snare[at(2)] = true; // light comping accent
+        break;
+
+      case 'ballad':
+        kick[0] = true;
+        if (beats > 2) kick[at(2)] = true;
+        if (beats > 1) snare[at(1)] = true;
+        if (beats > 3) snare[at(3)] = true;
+        for (let b = 0; b < beats; b++) hihat[at(b)] = true;               // quarter notes only
+        break;
+
+      case 'rock':
+      default:
+        kick[0] = true;
+        if (beats > 2) kick[at(2)] = true;
+        if (beats > 1) snare[at(1)] = true;
+        if (beats > 3) snare[at(3)] = true;
+        for (let s = 0; s < steps; s += Math.max(1, Math.round(spb/2))) hihat[s] = true; // 8ths
+        break;
+    }
+    return { kick, snare, hihat };
+  }
+
+  function renderGrid() {
+    [ [rowKick, pattern.kick, 'kick'], [rowSnare, pattern.snare, 'snare'], [rowHihat, pattern.hihat, 'hihat'] ]
+      .forEach(([row, arr, cls]) => {
+        row.innerHTML = '';
+        arr.forEach((on) => {
+          const d = document.createElement('div');
+          d.className = 'step' + (on ? ` on ${cls}` : '');
+          row.appendChild(d);
+        });
+      });
+  }
+
+  function highlightStep(step) {
+    [rowKick, rowSnare, rowHihat].forEach(row => {
+      Array.from(row.children).forEach((el, i) => el.classList.toggle('playhead', i === step));
+    });
+  }
+
+  function clearPlayhead() {
+    [rowKick, rowSnare, rowHihat].forEach(row => {
+      Array.from(row.children).forEach(el => el.classList.remove('playhead'));
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Audio engine setup
+  // ---------------------------------------------------------------------
+  function buildDrumSynths() {
+    if (drumBus) drumBus.dispose();
+    drumBus = new Tone.Gain(drumVol.value / 100).toDestination();
+
+    kickSynth = new Tone.MembraneSynth({
+      pitchDecay: 0.045, octaves: 6,
+      envelope: { attack: 0.001, decay: 0.35, sustain: 0 }
+    }).connect(drumBus);
+
+    snareSynth = new Tone.NoiseSynth({
+      noise: { type: 'white' },
+      envelope: { attack: 0.001, decay: 0.16, sustain: 0 }
+    }).connect(drumBus);
+
+    hihatSynth = new Tone.MetalSynth({
+      frequency: 280, envelope: { attack: 0.001, decay: 0.08, release: 0.02 },
+      harmonicity: 5.1, modulationIndex: 28, resonance: 3500, octaves: 1.2
+    }).connect(drumBus);
+
+    crashSynth = new Tone.MetalSynth({
+      frequency: 300, envelope: { attack: 0.001, decay: 1.1, release: 0.3 },
+      harmonicity: 4.6, modulationIndex: 20, resonance: 4000, octaves: 1.8
+    }).connect(drumBus);
+  }
+
+  // Pick a Tone synth voice based on GM program number so instruments
+  // roughly match the original MIDI's intended timbre.
+  function synthForProgram(program) {
+    let synth;
+    if (program === undefined) {
+      synth = new Tone.PolySynth(Tone.Synth);
+    } else if (program <= 7) {
+      synth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: 'triangle' }, envelope: { attack: 0.005, decay: 0.3, sustain: 0.2, release: 0.6 } });
+    } else if (program >= 24 && program <= 31) {
+      synth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: 'sawtooth' }, envelope: { attack: 0.005, decay: 0.2, sustain: 0.25, release: 0.35 } });
+    } else if (program >= 32 && program <= 39) {
+      synth = new Tone.MonoSynth({ oscillator: { type: 'sine' }, envelope: { attack: 0.01, decay: 0.25, sustain: 0.4, release: 0.4 } });
+    } else if (program >= 40 && program <= 55) {
+      synth = new Tone.PolySynth(Tone.AMSynth);
+    } else if (program >= 80 && program <= 103) {
+      synth = new Tone.PolySynth(Tone.FMSynth);
+    } else {
+      synth = new Tone.PolySynth(Tone.Synth);
+    }
+    return synth.connect(originalBus);
+  }
+
+  function buildNoteParts(m) {
+    noteParts.forEach(p => { p.part.dispose(); p.synth.dispose(); });
+    noteParts = [];
+
+    m.tracks.forEach(track => {
+      if (!track.notes.length) return;
+      if (track.channel === 9) return; // channel 10 (index 9) is GM percussion — our engine drives drums instead
+
+      const program = track.instrument ? track.instrument.number : undefined;
+      const synth = synthForProgram(program);
+      const isMono = synth instanceof Tone.MonoSynth;
+
+      const part = new Tone.Part((time, note) => {
+        if (isMono) {
+          synth.triggerAttackRelease(note.name, note.duration, time, note.velocity);
+        } else {
+          synth.triggerAttackRelease(note.name, note.duration, time, note.velocity);
+        }
+      }, track.notes.map(n => ({ time: n.time, name: n.name, duration: Math.max(n.duration, 0.03), velocity: n.velocity })));
+
+      part.start(0);
+      noteParts.push({ part, synth });
+    });
+  }
+
+  function buildDrumSequence() {
+    if (drumSeq) { drumSeq.dispose(); drumSeq = null; }
+    barCounter = -1;
+    const subdivision = stepsPerBeat === 2 ? '8n' : '16n';
+
+    drumSeq = new Tone.Sequence((time, step) => {
+      if (step === 0) barCounter++;
+      if (pattern.kick[step])  kickSynth.triggerAttackRelease('C1', '8n', time, 0.95);
+      if (pattern.snare[step]) snareSynth.triggerAttackRelease('8n', time, 0.85);
+      if (pattern.hihat[step]) {
+        const accent = (step % stepsPerBeat === 0) ? 0.55 : 0.32;
+        hihatSynth.triggerAttackRelease('C6', '32n', time, accent);
+      }
+      if (step === 0 && barCounter > 0 && barCounter % 4 === 0) {
+        crashSynth.triggerAttackRelease('4n', time, 0.6); // accent every 4th bar
+      }
+      Tone.Draw.schedule(() => highlightStep(step), time);
+    }, [...Array(totalSteps).keys()], subdivision);
+
+    drumSeq.start(0);
+  }
+
+  // ---------------------------------------------------------------------
+  // File loading
+  // ---------------------------------------------------------------------
+  async function handleFile(file) {
+    if (!file) return;
+    setStatus('Parsing MIDI file…');
+    playBtn.disabled = true;
+
+    try {
+      const buf = await file.arrayBuffer();
+      midi = new Midi(buf);
+
+      bpm = (midi.header.tempos[0] && midi.header.tempos[0].bpm) || 120;
+      const ts = midi.header.timeSignatures[0] ? midi.header.timeSignatures[0].timeSignature : [4, 4];
+      numerator = ts[0]; denominator = ts[1];
+      stepsPerBeat = denominator === 8 ? 2 : 4;
+      totalSteps = Math.max(4, Math.round(numerator * stepsPerBeat));
+
+      genre = detectGenre(midi, bpm);
+      pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+
+      bpmOut.textContent = `${Math.round(bpm)} BPM`;
+      tsOut.textContent = `${numerator}/${denominator}`;
+      durOut.textContent = fmtTime(midi.duration);
+      tTotal.textContent = fmtTime(midi.duration);
+      genreSelect.value = genre;
+      genreSelect.disabled = false;
+      renderGrid();
+
+      fileNameEl.textContent = file.name;
+      dropLabel.textContent = 'Tap to load a different file';
+      playBtn.disabled = false;
+      setStatus(`Ready — ${midi.tracks.filter(t => t.notes.length).length} track(s) found. Tap Play to start.`);
+    } catch (err) {
+      console.error(err);
+      setStatus('Could not parse that file — please choose a valid .mid file.', true);
+    }
+  }
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault(); dropZone.classList.remove('dragover');
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) handleFile(f);
+  });
+  fileInput.addEventListener('change', e => handleFile(e.target.files[0]));
+
+  genreSelect.addEventListener('change', () => {
+    if (!midi) return;
+    genre = genreSelect.value;
+    pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+    renderGrid();
+    if (isPlaying) buildDrumSequence(); // hot-swap pattern without stopping playback
+    setStatus(`Genre set to ${genre}. Drum pattern regenerated.`);
+  });
+
+  // ---------------------------------------------------------------------
+  // Transport controls
+  // ---------------------------------------------------------------------
+  async function play() {
+    if (!midi) return;
+    await Tone.start(); // required user-gesture unlock for iOS/Safari
+
+    if (!originalBus) originalBus = new Tone.Gain(origVol.value / 100).toDestination();
+    buildDrumSynths();
+    buildNoteParts(midi);
+    Tone.Transport.bpm.value = bpm;
+    Tone.Transport.timeSignature = [numerator, denominator];
+    buildDrumSequence();
+
+    Tone.Transport.seconds = 0;
+    Tone.Transport.start('+0.05');
+    isPlaying = true;
+    playBtn.disabled = true;
+    stopBtn.disabled = false;
+    setStatus('Playing — original MIDI + generated drums, locked to the same clock.');
+
+    Tone.Transport.scheduleOnce(() => { stop(); }, midi.duration + 0.75);
+    tick();
+  }
+
+  function stop() {
+    Tone.Transport.stop();
+    Tone.Transport.cancel();
+    if (drumSeq) { drumSeq.dispose(); drumSeq = null; }
+    noteParts.forEach(p => { p.part.dispose(); p.synth.dispose(); });
+    noteParts = [];
+    isPlaying = false;
+    playBtn.disabled = false;
+    stopBtn.disabled = true;
+    clearPlayhead();
+    progFill.style.width = '0%';
+    tCur.textContent = '0:00';
+    cancelAnimationFrame(rafId);
+    setStatus('Stopped. Tap Play to run it again.');
+  }
+
+  function tick() {
+    if (!isPlaying || !midi) return;
+    const t = Tone.Transport.seconds;
+    const pct = Math.min(100, (t / midi.duration) * 100);
+    progFill.style.width = pct + '%';
+    tCur.textContent = fmtTime(t);
+    rafId = requestAnimationFrame(tick);
+  }
+
+  playBtn.addEventListener('click', play);
+  stopBtn.addEventListener('click', stop);
+
+  origVol.addEventListener('input', () => {
+    origVal.textContent = origVol.value + '%';
+    if (originalBus) originalBus.gain.rampTo(origVol.value / 100, 0.05);
+  });
+  drumVol.addEventListener('input', () => {
+    drumVal.textContent = drumVol.value + '%';
+    if (drumBus) drumBus.gain.rampTo(drumVol.value / 100, 0.05);
+  });
+
+  // Prevent iOS double-tap zoom on the transport buttons
+  document.querySelectorAll('button, .drop').forEach(el => {
+    el.addEventListener('touchend', e => { /* allow default tap, block zoom gesture */ }, { passive: true });
+  });
+})();
+</script>
+</body>
+</html>
