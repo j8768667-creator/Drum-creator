@@ -574,6 +574,14 @@
         for (let b = 0; b < beats; b++) hihat[at(b)] = true;               // quarter notes only
         break;
 
+      case 'pop':
+        kick[0] = true;
+        { const syncStep = at(1) + Math.floor(spb / 2); if (syncStep < steps) kick[syncStep] = true; } // kick pushes ahead of beat 2
+        if (beats > 1) snare[at(1)] = true;
+        if (beats > 3) snare[at(3)] = true;
+        for (let s = 0; s < steps; s += Math.max(1, Math.round(spb/2))) hihat[s] = true; // 8ths
+        break;
+
       case 'rock':
       default:
         kick[0] = true;
@@ -610,31 +618,48 @@
     return result; // [{ pc: 0-11, isMinor }] per bar
   }
 
+  const LETTER_TO_PC = { C:0, 'C#':1, DB:1, D:2, 'D#':3, EB:3, E:4, F:5, 'F#':6, GB:6, G:7, 'G#':8, AB:8, A:9, 'A#':10, BB:10, B:11 };
+  const ROMAN_ORDER = ['VII', 'III', 'VI', 'IV', 'II', 'V', 'I']; // longest-first so "VII" isn't mistaken for "V"
+
+  // Splits a roman-numeral chord symbol into its scale degree, accidental,
+  // minor/major case, and whatever quality text is left over (e.g. "maj7",
+  // "7b9", "alt", "6") — a straightforward prefix match, unlike the original
+  // ChordFlow code's suffix-stripping regex, which mis-parsed any symbol
+  // where the numeral itself was immediately followed by "7" (so "V7alt",
+  // "V7b9" and "iv7" all silently collapsed to the tonic — the root cause
+  // of progressions sounding stuck/wrong).
+  function degreeInfo(symbol) {
+    let raw = symbol;
+    if (raw.includes('/')) raw = raw.split('/')[0];
+    let accidental = 0;
+    if (raw[0] === 'b') { accidental = -1; raw = raw.slice(1); }
+    else if (raw[0] === '#') { accidental = 1; raw = raw.slice(1); }
+    const isMinor = /[a-z]/.test(raw[0] || '');
+    const upper = raw.toUpperCase();
+    let degree = 'I', rest = raw;
+    for (const r of ROMAN_ORDER) { if (upper.startsWith(r)) { degree = r; rest = raw.slice(r.length); break; } }
+    return { idx: DEG[degree], isMinor, accidental, rest: rest.toLowerCase() };
+  }
+
   // Roman-numeral chord parser adapted from the uploaded ChordFlow generator —
   // resolves a symbol like "V7alt" or "IVmaj7" against a root + scale into
   // absolute MIDI pitches, voice-led close to the previous chord.
   function parseRomanChord(symbol, rootPc, scaleName, prevPitches) {
     const scale = SCALES[scaleName] || SCALES.major;
-    let raw = symbol, slashBass = null;
-    if (raw.includes('/')) { const parts = raw.split('/'); raw = parts[0]; slashBass = parts[1]; }
-    let accidental = 0;
-    if (raw[0] === 'b') { accidental = -1; raw = raw.slice(1); }
-    else if (raw[0] === '#') { accidental = 1; raw = raw.slice(1); }
-    let clean = raw.replace(/(add9|maj9|maj7|m7|11|alt|7b9|7b13|v7|5|sus4|sus2|7)/i, '');
-    const isMinor = /^[iv]+/.test(clean);
-    const degree = clean.toUpperCase() || 'I';
-    const idx = DEG[degree] !== undefined ? DEG[degree] : 0;
+    const { idx, isMinor, accidental, rest } = degreeInfo(symbol);
     const rootPC = (rootPc + scale[idx] + accidental + 120) % 12;
     let basePitch = 60 + rootPC;
 
-    let intervals = [0, 4, 7];
-    if (isMinor) intervals = [0, 3, 7];
-    if (symbol.includes('5')) intervals = [0, 7];
-    if (symbol.includes('sus2')) intervals = [0, 2, 7];
-    if (symbol.includes('sus4')) intervals = [0, 5, 7];
-    if (symbol.includes('7')) intervals.push(10);
-    if (symbol.includes('maj7')) intervals[3] = 11;
-    if (symbol.includes('add9') || symbol.includes('9')) intervals.push(14);
+    let intervals = isMinor ? [0, 3, 7] : [0, 4, 7];
+    if (rest.includes('5') && !rest.includes('sus')) intervals = [0, 7];
+    if (rest.includes('sus2')) intervals = [0, 2, 7];
+    if (rest.includes('sus4')) intervals = [0, 5, 7];
+    if (rest.includes('7')) intervals.push(10);
+    if (rest.includes('maj7')) intervals[intervals.length - 1] = 11;
+    if (rest.includes('6') && !rest.includes('7')) intervals.push(9);
+    if (rest.includes('9')) intervals.push(14);
+    if (rest.includes('11')) intervals.push(17);
+    if (rest.includes('13')) intervals.push(21);
 
     let pitches = intervals.map(n => basePitch + n);
     if (prevPitches && prevPitches.length) {
@@ -644,10 +669,13 @@
       pitches = pitches.map(p => p > 72 ? p - 12 : p);
     }
 
+    // Slash-bass notes in this catalog are absolute letters (e.g. "V/B", "I/G"),
+    // not scale degrees — resolve them as such.
     let bassPitch = basePitch - 24;
-    if (slashBass) {
-      const bIdx = DEG[slashBass.toUpperCase()];
-      if (bIdx !== undefined) bassPitch = 36 + ((rootPc + scale[bIdx] + 120) % 12);
+    if (symbol.includes('/')) {
+      const letter = symbol.split('/')[1].toUpperCase();
+      const pc = LETTER_TO_PC[letter];
+      if (pc !== undefined) bassPitch = 36 + pc;
     }
     return { pitches, bassPitch, rootPC, isMinor };
   }
@@ -666,14 +694,7 @@
       const plan = [];
       for (let b = 0; b < numBars; b++) {
         const symbol = preset.roman[b % preset.roman.length];
-        let raw = symbol; if (raw.includes('/')) raw = raw.split('/')[0];
-        let accidental = 0;
-        if (raw[0] === 'b') { accidental = -1; raw = raw.slice(1); }
-        else if (raw[0] === '#') { accidental = 1; raw = raw.slice(1); }
-        const clean = raw.replace(/(add9|maj9|maj7|m7|11|alt|7b9|7b13|v7|5|sus4|sus2|7)/i, '');
-        const isMinor = /^[iv]+/.test(clean);
-        const degree = clean.toUpperCase() || 'I';
-        const idx = DEG[degree] !== undefined ? DEG[degree] : 0;
+        const { idx, isMinor, accidental } = degreeInfo(symbol);
         const pc = (chordRootSel + scale[idx] + accidental + 120) % 12;
         plan.push({ pc, isMinor, symbol });
       }
@@ -792,11 +813,48 @@
   // Chords: voices each bar's harmony as a sustained pad, voice-led smoothly
   // from the previous bar (via parseRomanChord in preset mode, or a plain
   // triad in auto mode) — using the SAME per-bar harmonyPlan as the bass.
+  // How the chord voicing gets played within a bar — this is what makes
+  // genre switches audible in the chords, not just the drums: a ballad pad
+  // sustains the whole bar, an electronic chord stabs on every beat, jazz
+  // comps on 2 & 4, etc. All hits in a bar use the same chord tones.
+  function buildChordRhythm(g, beats, beatDur) {
+    switch (g) {
+      case 'electronic': {
+        const hits = [];
+        for (let b = 0; b < beats; b++) hits.push({ offset: b * beatDur, dur: beatDur * 0.35, vel: 0.6 });
+        return hits;
+      }
+      case 'hiphop': {
+        const hits = [{ offset: 0, dur: beatDur * 1.4, vel: 0.55 }];
+        if (beats > 2) hits.push({ offset: beatDur * 2.5, dur: beatDur * 0.6, vel: 0.45 });
+        return hits;
+      }
+      case 'jazz': {
+        const hits = [];
+        if (beats > 1) hits.push({ offset: beatDur * 1, dur: beatDur * 0.5, vel: 0.5 });
+        if (beats > 3) hits.push({ offset: beatDur * 3, dur: beatDur * 0.5, vel: 0.5 });
+        if (!hits.length) hits.push({ offset: 0, dur: beatDur * 0.6, vel: 0.5 });
+        return hits;
+      }
+      case 'pop': {
+        const hits = [{ offset: 0, dur: beatDur * 1.8, vel: 0.55 }];
+        if (beats > 2) hits.push({ offset: beatDur * 2, dur: beatDur * 1.8, vel: 0.5 });
+        return hits;
+      }
+      case 'ballad':
+        return [{ offset: 0, dur: beatDur * beats * 0.96, vel: 0.42 }];
+      case 'rock':
+      default:
+        return [{ offset: 0, dur: beatDur * beats * 0.75, vel: 0.55 }];
+    }
+  }
+
   function rebuildChordEventsOnly() {
     if (!midi) return;
     const duration = songDuration();
     const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
-    const preset = CHORD_CATALOG[chordPresetId] || CHORD_CATALOG[0];
+    const beats = Math.max(1, Math.round(totalSteps / stepsPerBeat));
+    const beatDur = stepsPerBeat * secPerStep;
     const cEvents = [];
     let prevPitches = null;
     for (let b = 0; b < numBars; b++) {
@@ -818,7 +876,11 @@
         }
       }
       prevPitches = pitches;
-      cEvents.push({ time: barStart, pitches, duration: barDuration * 0.94, velocity: 0.55 });
+      buildChordRhythm(genre, beats, beatDur).forEach(hit => {
+        const time = barStart + hit.offset;
+        if (time > duration + 1) return;
+        cEvents.push({ time, pitches, duration: Math.max(0.08, hit.dur), velocity: hit.vel });
+      });
     }
     chordEvents = cEvents;
   }
@@ -1096,8 +1158,11 @@
     genre = genreSelect.value;
     generateArrangement(true); // genre switch replaces the drum pattern with the new default
     renderGrid();
-    if (isPlaying) scheduleAllParts(Tone.Transport.seconds); // hot-swap without stopping playback
-    setStatus(`Genre set to ${genre}. Drum + bass parts regenerated.`);
+    if (isPlaying) {
+      if (bassSynth) bassSynth.set({ oscillator: { type: genre === 'electronic' ? 'sawtooth' : 'triangle' } });
+      scheduleAllParts(Tone.Transport.seconds); // hot-swap without stopping playback
+    }
+    setStatus(`Genre set to ${genre}. Drums, bass and chord rhythm regenerated.`);
   });
 
   resetPatternBtn.addEventListener('click', () => {
