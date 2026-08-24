@@ -190,6 +190,25 @@
     margin-top: 10px; width:100%; background: transparent; border-color: var(--line);
     color: var(--ink-dim); font-size: 12px; padding: 10px; min-height: 40px;
   }
+  .harmony-panel{ padding-bottom: 16px; }
+  .row-flex{ display:flex; align-items:center; }
+  .mini-label{
+    display:flex; flex-direction:column; gap:4px;
+    font-size: 10px; letter-spacing:.08em; color: var(--ink-dim); text-transform:uppercase;
+    flex: 1 1 0;
+  }
+  .harmony-manual{
+    display:grid; grid-template-columns: 1fr 1fr 1.4fr; gap: 10px; margin-top: 12px;
+  }
+  .harmony-manual.hidden{ display:none; }
+  .harmony-manual select.v-input{ width:100%; text-align:left; padding:8px 6px; }
+  .chord-now{
+    margin-top: 10px; font-family: var(--font-display); font-weight:700;
+    color: var(--bass); font-size: 13px; min-height: 16px;
+  }
+  @media (max-width: 560px){
+    .harmony-manual{ grid-template-columns: 1fr; }
+  }
 
   /* ---- Transport ---- */
   .transport{ display:flex; gap: 10px; margin-bottom: 14px; }
@@ -214,7 +233,7 @@
   button.ghost{ flex: 0 0 auto; background: transparent; }
 
   /* ---- Mixer ---- */
-  .mixer{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin-bottom: 14px; }
+  .mixer{ display:grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
   button.export{ background: var(--panel-2); border-color: var(--bass); color: var(--bass); width:100%; margin-bottom: 14px; }
   .fader{ background: var(--panel-2); border:1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
   .fader .k{ font-size: 10px; letter-spacing:.1em; color: var(--ink-dim); text-transform:uppercase; display:flex; justify-content:space-between; }
@@ -245,8 +264,8 @@
     font-size: 10.5px; color: var(--ink-dim); line-height: 1.5;
   }
 
-  @media (max-width: 560px){
-    .mixer{ grid-template-columns: 1fr; }
+  @media (max-width: 680px){
+    .mixer{ grid-template-columns: 1fr 1fr; }
   }
   @media (max-width: 420px){
     .readout{ grid-template-columns: repeat(2, 1fr); }
@@ -312,6 +331,31 @@
     <button class="reset-pattern" id="resetPatternBtn">↺ Reset pattern to genre default</button>
   </div>
 
+  <div class="grid-wrap harmony-panel">
+    <div class="row-flex">
+      <label class="mini-label">Harmony
+        <select class="v-input" id="harmonyMode" disabled>
+          <option value="auto">Auto-detect from MIDI</option>
+          <option value="preset">Choose a progression</option>
+        </select>
+      </label>
+    </div>
+    <div class="harmony-manual hidden" id="harmonyManual">
+      <label class="mini-label">Root<select class="v-input" id="chordRootSel"></select></label>
+      <label class="mini-label">Scale<select class="v-input" id="chordScaleSel">
+        <option value="major">Major</option>
+        <option value="minor">Natural Minor</option>
+        <option value="dorian">Dorian</option>
+        <option value="mixolydian">Mixolydian</option>
+        <option value="lydian">Lydian</option>
+        <option value="phrygian">Phrygian</option>
+      </select></label>
+      <label class="mini-label">Progression<select class="v-input" id="chordPresetSel"></select></label>
+    </div>
+    <div class="grid-note" id="chordPreview">Chords follow the harmony detected in your MIDI file; the bass line uses the same chords, bar for bar.</div>
+    <div class="chord-now" id="chordNow"></div>
+  </div>
+
   <div class="transport">
     <button class="primary" id="playBtn" disabled>▶ Play</button>
     <button class="stop" id="stopBtn" disabled>■ Stop</button>
@@ -330,9 +374,13 @@
       <div class="k">Bass Line <span class="val" id="bassVal">80%</span></div>
       <input type="range" id="bassVol" min="0" max="100" value="80">
     </div>
+    <div class="fader">
+      <div class="k">Chords <span class="val" id="chordVal">65%</span></div>
+      <input type="range" id="chordVol" min="0" max="100" value="65">
+    </div>
   </div>
 
-  <button class="export" id="exportBtn" disabled>⇩ Export Multi-track MIDI (Original + Drums + Bass)</button>
+  <button class="export" id="exportBtn" disabled>⇩ Export Multi-track MIDI (Original + Drums + Bass + Chords)</button>
 
   <div class="progress"><div class="progress-fill" id="progFill"></div></div>
   <div class="time-labels"><span id="tCur">0:00</span><span id="tTotal">0:00</span></div>
@@ -341,7 +389,9 @@
 
   <footer class="note">
     Genre is inferred from tempo, note density and instrument program numbers — override it any time with the
-    dropdown above and the drum pattern regenerates instantly. On iPhone/iPad, audio unlocks on your first tap,
+    dropdown above and the drum pattern regenerates instantly. Harmony defaults to auto-detecting chords from
+    the MIDI file; switch to "Choose a progression" for a roman-numeral chord set with proper voice-leading —
+    the bass line always follows whichever chords are active. On iPhone/iPad, audio unlocks on your first tap,
     so use the Play button rather than autoplay.
   </footer>
 </div>
@@ -371,10 +421,33 @@
 
   const GM_DRUM = { kick: 36, snare: 38, hihat: 42, tomHi: 50, tomMid: 47, tomLo: 45, crash: 49 };
 
-  let originalBus = null, drumBus = null, bassBus = null;
-  let kickSynth, snareSynth, hihatSynth, tomSynth, crashSynth, bassSynth;
+  // --- Chord engine (adapted from the uploaded ChordFlow roman-numeral generator) ---
+  const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const SCALES = {
+    major: [0,2,4,5,7,9,11], minor: [0,2,3,5,7,8,10],
+    dorian: [0,2,3,5,7,9,10], mixolydian: [0,2,4,5,7,9,10],
+    lydian: [0,2,4,6,7,9,11], phrygian: [0,1,3,5,7,8,10]
+  };
+  const DEG = { I: 0, II: 1, III: 2, IV: 3, V: 4, VI: 5, VII: 6 };
+  const CHORD_CATALOG = [
+    { name: 'Neo-Soul Smooth 9ths',  roman: ['Imaj9', 'vi7', 'ii7', 'V11'] },
+    { name: 'Pop Emotional Flow',    roman: ['Iadd9', 'V/B', 'vi7', 'IVmaj7'] },
+    { name: 'Plagal Resolution',     roman: ['IVmaj7', 'I/G', 'IV/A', 'I'] },
+    { name: 'Lo-Fi Chill Hop',       roman: ['i7', 'iv7', 'bVImaj7', 'V7b9'] },
+    { name: 'Jazz-Hop Extended',     roman: ['ii7', 'V7alt', 'Imaj9', 'VI7b13'] },
+    { name: 'Soulful Minor Flow',    roman: ['i9', 'bVII6', 'bVImaj7', 'i7'] }
+  ];
+  let harmonyMode = 'auto';   // 'auto' | 'preset'
+  let chordRootSel = 0;       // pitch class, only used in preset mode
+  let chordScaleSel = 'major';
+  let chordPresetId = 0;
+  let harmonyPlan = [];       // per-bar [{ pc, isMinor }], shared by bass + chords
+  let chordEvents = [];       // full-song absolute-time chord hits, also used for MIDI export
+
+  let originalBus = null, drumBus = null, bassBus = null, chordBus = null;
+  let kickSynth, snareSynth, hihatSynth, tomSynth, crashSynth, bassSynth, chordSynth;
   let noteParts = [];         // Tone.Part instances for the original MIDI
-  let drumPart = null, bassPart = null;
+  let drumPart = null, bassPart = null, chordPart = null;
   let rafId = null;
   let isPlaying = false;
 
@@ -412,6 +485,15 @@
   const tsDen      = document.getElementById('tsDen');
   const resetTsBtn = document.getElementById('resetTsBtn');
   const resetPatternBtn = document.getElementById('resetPatternBtn');
+  const harmonyModeSel = document.getElementById('harmonyMode');
+  const harmonyManual  = document.getElementById('harmonyManual');
+  const chordRootSelEl = document.getElementById('chordRootSel');
+  const chordScaleSelEl= document.getElementById('chordScaleSel');
+  const chordPresetSelEl = document.getElementById('chordPresetSel');
+  const chordPreview   = document.getElementById('chordPreview');
+  const chordNow       = document.getElementById('chordNow');
+  const chordVol       = document.getElementById('chordVol');
+  const chordVal       = document.getElementById('chordVal');
 
   const fmtTime = s => {
     s = Math.max(0, s|0);
@@ -508,10 +590,10 @@
   // Bass: detect a per-bar root note from the original MIDI's harmony,
   // then apply a genre-specific rhythmic groove on top of it.
   // ---------------------------------------------------------------------
-  function detectRootProgression(m, barDur, numBars) {
+  function detectBarHarmony(m, barDur, numBars) {
     const notes = [];
     m.tracks.forEach(t => { if (t.channel === 9) return; t.notes.forEach(n => notes.push(n)); });
-    const roots = [];
+    const result = [];
     for (let b = 0; b < numBars; b++) {
       const start = b * barDur, end = start + barDur;
       const weights = new Array(12).fill(0);
@@ -521,10 +603,90 @@
       });
       let best = -1, bestW = 0;
       weights.forEach((w, i) => { if (w > bestW) { bestW = w; best = i; } });
-      roots.push(best >= 0 ? best : (roots[b - 1] !== undefined ? roots[b - 1] : 0));
+      const pc = best >= 0 ? best : (result[b - 1] ? result[b - 1].pc : 0);
+      const isMinor = weights[(pc + 3) % 12] > weights[(pc + 4) % 12]; // minor 3rd outweighs major 3rd
+      result.push({ pc, isMinor });
     }
-    return roots; // pitch class 0-11 per bar
+    return result; // [{ pc: 0-11, isMinor }] per bar
   }
+
+  // Roman-numeral chord parser adapted from the uploaded ChordFlow generator —
+  // resolves a symbol like "V7alt" or "IVmaj7" against a root + scale into
+  // absolute MIDI pitches, voice-led close to the previous chord.
+  function parseRomanChord(symbol, rootPc, scaleName, prevPitches) {
+    const scale = SCALES[scaleName] || SCALES.major;
+    let raw = symbol, slashBass = null;
+    if (raw.includes('/')) { const parts = raw.split('/'); raw = parts[0]; slashBass = parts[1]; }
+    let accidental = 0;
+    if (raw[0] === 'b') { accidental = -1; raw = raw.slice(1); }
+    else if (raw[0] === '#') { accidental = 1; raw = raw.slice(1); }
+    let clean = raw.replace(/(add9|maj9|maj7|m7|11|alt|7b9|7b13|v7|5|sus4|sus2|7)/i, '');
+    const isMinor = /^[iv]+/.test(clean);
+    const degree = clean.toUpperCase() || 'I';
+    const idx = DEG[degree] !== undefined ? DEG[degree] : 0;
+    const rootPC = (rootPc + scale[idx] + accidental + 120) % 12;
+    let basePitch = 60 + rootPC;
+
+    let intervals = [0, 4, 7];
+    if (isMinor) intervals = [0, 3, 7];
+    if (symbol.includes('5')) intervals = [0, 7];
+    if (symbol.includes('sus2')) intervals = [0, 2, 7];
+    if (symbol.includes('sus4')) intervals = [0, 5, 7];
+    if (symbol.includes('7')) intervals.push(10);
+    if (symbol.includes('maj7')) intervals[3] = 11;
+    if (symbol.includes('add9') || symbol.includes('9')) intervals.push(14);
+
+    let pitches = intervals.map(n => basePitch + n);
+    if (prevPitches && prevPitches.length) {
+      const targetMean = prevPitches.reduce((a, b) => a + b, 0) / prevPitches.length;
+      pitches = pitches.map(p => { while (p - targetMean > 6) p -= 12; while (p - targetMean < -6) p += 12; return p; });
+    } else {
+      pitches = pitches.map(p => p > 72 ? p - 12 : p);
+    }
+
+    let bassPitch = basePitch - 24;
+    if (slashBass) {
+      const bIdx = DEG[slashBass.toUpperCase()];
+      if (bIdx !== undefined) bassPitch = 36 + ((rootPc + scale[bIdx] + 120) % 12);
+    }
+    return { pitches, bassPitch, rootPC, isMinor };
+  }
+
+  function chordSymbolOf(barPlan) {
+    if (barPlan.symbol) return barPlan.symbol;
+    return NOTE_NAMES[barPlan.pc] + (barPlan.isMinor ? 'm' : '');
+  }
+
+  // One bar-indexed harmony plan shared by the bass groove and the chords
+  // track, so both instruments agree on the same chord at the same time.
+  function buildHarmonyPlan(numBars) {
+    if (harmonyMode === 'preset') {
+      const preset = CHORD_CATALOG[chordPresetId] || CHORD_CATALOG[0];
+      const scale = SCALES[chordScaleSel] || SCALES.major;
+      const plan = [];
+      for (let b = 0; b < numBars; b++) {
+        const symbol = preset.roman[b % preset.roman.length];
+        let raw = symbol; if (raw.includes('/')) raw = raw.split('/')[0];
+        let accidental = 0;
+        if (raw[0] === 'b') { accidental = -1; raw = raw.slice(1); }
+        else if (raw[0] === '#') { accidental = 1; raw = raw.slice(1); }
+        const clean = raw.replace(/(add9|maj9|maj7|m7|11|alt|7b9|7b13|v7|5|sus4|sus2|7)/i, '');
+        const isMinor = /^[iv]+/.test(clean);
+        const degree = clean.toUpperCase() || 'I';
+        const idx = DEG[degree] !== undefined ? DEG[degree] : 0;
+        const pc = (chordRootSel + scale[idx] + accidental + 120) % 12;
+        plan.push({ pc, isMinor, symbol });
+      }
+      return plan;
+    }
+    const origSecPerStep = (60 / detectedBpm) / 4;
+    const origBarDuration = totalSteps * origSecPerStep;
+    return detectBarHarmony(midi, origBarDuration, numBars);
+  }
+
+  // Returns [0,4,7] (major) or [0,3,7] (minor) — used by the bass groove
+  // so its "3rd"/"7th" offsets track the actual chord quality.
+  function triadIntervals(isMinor) { return isMinor ? [0, 3, 7, 10] : [0, 4, 7, 11]; }
 
   // Returns one bar's worth of bass hits: { step, semitone (offset from root), lenSteps }
   function buildBassGroove(g, steps, spb) {
@@ -545,9 +707,8 @@
         if (steps > spb * 2 + Math.floor(spb / 2)) ev.push({ step: spb * 2 + Math.floor(spb / 2), semitone: 0, len: Math.max(1, Math.floor(spb / 2)) });
         if (beats > 3) ev.push({ step: at(3), semitone: 7, len: Math.max(1, Math.floor(spb / 2)) });
         break;
-      case 'jazz': {                                              // walking quarter notes
-        const degrees = [0, 4, 7, 11];
-        for (let b = 0; b < beats; b++) ev.push({ step: at(b), semitone: degrees[b % degrees.length], len: spb });
+      case 'jazz': {                                              // walking quarter notes: root,3rd,5th,7th of the ACTUAL chord
+        for (let b = 0; b < beats; b++) ev.push({ step: at(b), degree: b % 4, len: spb });
         break;
       }
       case 'ballad':                                              // sustained whole-bar root
@@ -601,28 +762,25 @@
     drumEvents = dEvents;
   }
 
-  // Bass: chord roots are detected against the ORIGINAL (detected-tempo)
-  // bar length, since the harmony lives in the file regardless of the
-  // tempo the user dials in — then placed at the current (scaled) timing.
+  // Bass: reads the shared harmonyPlan (built once per generateArrangement
+  // call) so it always agrees with whatever the chords track is playing.
   function rebuildBassEventsOnly() {
     if (!midi) return;
     const duration = songDuration();
     const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
-    const origSecPerStep = (60 / detectedBpm) / 4;
-    const origBarDuration = totalSteps * origSecPerStep;
-    const roots = detectRootProgression(midi, origBarDuration, numBars);
     const baseOctave = genre === 'electronic' ? 28 : (genre === 'jazz' ? 40 : 36);
     const groove = buildBassGroove(genre, totalSteps, stepsPerBeat);
     const bEvents = [];
     for (let b = 0; b < numBars; b++) {
       const barStart = b * barDuration;
-      const rootPc = roots[b];
+      const barPlan = harmonyPlan[b] || harmonyPlan[harmonyPlan.length - 1] || { pc: 0, isMinor: false };
       groove.forEach(ev => {
         const time = barStart + ev.step * secPerStep;
         if (time > duration + 1) return;
+        const semis = ev.semitone !== undefined ? ev.semitone : triadIntervals(barPlan.isMinor)[ev.degree];
         bEvents.push({
           time,
-          midi: baseOctave + rootPc + ev.semitone,
+          midi: baseOctave + barPlan.pc + semis,
           duration: Math.max(0.08, ev.len * secPerStep * 0.9),
           velocity: 0.8
         });
@@ -631,13 +789,75 @@
     bassEvents = bEvents;
   }
 
+  // Chords: voices each bar's harmony as a sustained pad, voice-led smoothly
+  // from the previous bar (via parseRomanChord in preset mode, or a plain
+  // triad in auto mode) — using the SAME per-bar harmonyPlan as the bass.
+  function rebuildChordEventsOnly() {
+    if (!midi) return;
+    const duration = songDuration();
+    const numBars = Math.max(1, Math.ceil(duration / barDuration) + 1);
+    const preset = CHORD_CATALOG[chordPresetId] || CHORD_CATALOG[0];
+    const cEvents = [];
+    let prevPitches = null;
+    for (let b = 0; b < numBars; b++) {
+      const barStart = b * barDuration;
+      if (barStart > duration + 1) break;
+      const barPlan = harmonyPlan[b] || harmonyPlan[harmonyPlan.length - 1] || { pc: 0, isMinor: false };
+      let pitches;
+      if (harmonyMode === 'preset') {
+        const res = parseRomanChord(barPlan.symbol, chordRootSel, chordScaleSel, prevPitches);
+        pitches = res.pitches;
+      } else {
+        const basePitch = 60 + barPlan.pc;
+        pitches = triadIntervals(barPlan.isMinor).slice(0, 3).map(n => basePitch + n);
+        if (prevPitches && prevPitches.length) {
+          const targetMean = prevPitches.reduce((a, c) => a + c, 0) / prevPitches.length;
+          pitches = pitches.map(p => { while (p - targetMean > 6) p -= 12; while (p - targetMean < -6) p += 12; return p; });
+        } else {
+          pitches = pitches.map(p => p > 72 ? p - 12 : p);
+        }
+      }
+      prevPitches = pitches;
+      cEvents.push({ time: barStart, pitches, duration: barDuration * 0.94, velocity: 0.55 });
+    }
+    chordEvents = cEvents;
+  }
+
   // Full regenerate — pass resetPattern=true after a genre or meter change,
   // omit it (or pass false) to keep whatever the user has manually edited.
   function generateArrangement(resetPattern) {
     if (!midi) return;
     if (resetPattern) pattern = buildPattern(genre, totalSteps, stepsPerBeat);
+    const numBars = Math.max(1, Math.ceil(songDuration() / barDuration) + 1);
+    harmonyPlan = buildHarmonyPlan(numBars);
     rebuildDrumEventsOnly();
     rebuildBassEventsOnly();
+    rebuildChordEventsOnly();
+    updateChordPreview();
+  }
+
+  // Harmony-only regenerate — used when the user changes harmony mode,
+  // root, scale or progression. Leaves the drum pattern untouched.
+  function regenerateHarmony() {
+    if (!midi) return;
+    const numBars = Math.max(1, Math.ceil(songDuration() / barDuration) + 1);
+    harmonyPlan = buildHarmonyPlan(numBars);
+    rebuildBassEventsOnly();
+    rebuildChordEventsOnly();
+    updateChordPreview();
+    if (isPlaying) {
+      scheduleBassPart(Tone.Transport.seconds);
+      scheduleChordPart(Tone.Transport.seconds);
+    }
+  }
+
+  function updateChordPreview() {
+    if (harmonyMode === 'preset') {
+      const preset = CHORD_CATALOG[chordPresetId] || CHORD_CATALOG[0];
+      chordPreview.textContent = `${NOTE_NAMES[chordRootSel]} ${chordScaleSel} — ${preset.roman.join(' · ')} (loops every ${preset.roman.length} bars)`;
+    } else {
+      chordPreview.textContent = 'Chords follow the harmony detected in your MIDI file; the bass line uses the same chords, bar for bar.';
+    }
   }
 
   function renderGrid() {
@@ -714,6 +934,13 @@
       envelope: { attack: 0.015, decay: 0.2, sustain: 0.55, release: 0.25 },
       filterEnvelope: { attack: 0.01, decay: 0.2, sustain: 0.5, release: 0.3, baseFrequency: 200, octaves: 2.5 }
     }).connect(bassBus);
+
+    if (chordBus) chordBus.dispose();
+    chordBus = new Tone.Gain(chordVol.value / 100).toDestination();
+    chordSynth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: 'triangle' },
+      envelope: { attack: 0.05, decay: 0.3, sustain: 0.55, release: 0.9 }
+    }).connect(chordBus);
   }
 
   function triggerDrumHit(type, time, vel) {
@@ -791,9 +1018,18 @@
     }, bEvents).start(0);
   }
 
-  function scheduleDrumAndBassParts(fromTime) {
+  function scheduleChordPart(fromTime) {
+    if (chordPart) { chordPart.dispose(); chordPart = null; }
+    const cEvents = fromTime ? chordEvents.filter(e => e.time >= fromTime - 0.001) : chordEvents;
+    chordPart = new Tone.Part((time, ev) => {
+      ev.pitches.forEach(p => chordSynth.triggerAttackRelease(Tone.Frequency(p, 'midi').toNote(), ev.duration, time, ev.velocity));
+    }, cEvents).start(0);
+  }
+
+  function scheduleAllParts(fromTime) {
     scheduleDrumPart(fromTime);
     scheduleBassPart(fromTime);
+    scheduleChordPart(fromTime);
   }
 
   // ---------------------------------------------------------------------
@@ -829,6 +1065,8 @@
       tsNum.value = String(numerator);
       tsDen.value = String(denominator);
       tsNum.disabled = false; tsDen.disabled = false;
+      harmonyModeSel.disabled = false;
+      chordRootSelEl.disabled = false; chordScaleSelEl.disabled = false; chordPresetSelEl.disabled = false;
       durOut.textContent = fmtTime(songDuration());
       tTotal.textContent = fmtTime(songDuration());
 
@@ -858,7 +1096,7 @@
     genre = genreSelect.value;
     generateArrangement(true); // genre switch replaces the drum pattern with the new default
     renderGrid();
-    if (isPlaying) scheduleDrumAndBassParts(Tone.Transport.seconds); // hot-swap without stopping playback
+    if (isPlaying) scheduleAllParts(Tone.Transport.seconds); // hot-swap without stopping playback
     setStatus(`Genre set to ${genre}. Drum + bass parts regenerated.`);
   });
 
@@ -904,7 +1142,7 @@
     if (isPlaying) {
       Tone.Transport.bpm.value = bpm;
       buildNoteParts(midi);              // re-stretch original notes to the new tempo
-      scheduleDrumAndBassParts(Tone.Transport.seconds);
+      scheduleAllParts(Tone.Transport.seconds);
     }
     setStatus(`Tempo set to ${bpm} BPM.`);
   }
@@ -919,10 +1157,35 @@
     tTotal.textContent = fmtTime(songDuration());
     if (isPlaying) {
       Tone.Transport.timeSignature = [numerator, denominator];
-      scheduleDrumAndBassParts(Tone.Transport.seconds);
+      scheduleAllParts(Tone.Transport.seconds);
     }
     setStatus(`Time signature set to ${numerator}/${denominator}. Drum pattern was regenerated for the new bar length.`);
   }
+
+  // ---------------------------------------------------------------------
+  // Harmony controls (chord engine)
+  // ---------------------------------------------------------------------
+  function populateHarmonySelects() {
+    NOTE_NAMES.forEach((n, i) => {
+      const o = document.createElement('option'); o.value = i; o.textContent = n; chordRootSelEl.appendChild(o);
+    });
+    CHORD_CATALOG.forEach((p, i) => {
+      const o = document.createElement('option'); o.value = i; o.textContent = p.name; chordPresetSelEl.appendChild(o);
+    });
+    chordScaleSelEl.value = chordScaleSel;
+  }
+  populateHarmonySelects();
+
+  harmonyModeSel.addEventListener('change', () => {
+    harmonyMode = harmonyModeSel.value;
+    harmonyManual.classList.toggle('hidden', harmonyMode !== 'preset');
+    if (!midi) return;
+    regenerateHarmony();
+    setStatus(harmonyMode === 'preset' ? 'Using the chosen chord progression.' : 'Auto-detecting chords from the MIDI file.');
+  });
+  chordRootSelEl.addEventListener('change', () => { chordRootSel = parseInt(chordRootSelEl.value, 10); if (midi) regenerateHarmony(); });
+  chordScaleSelEl.addEventListener('change', () => { chordScaleSel = chordScaleSelEl.value; if (midi) regenerateHarmony(); });
+  chordPresetSelEl.addEventListener('change', () => { chordPresetId = parseInt(chordPresetSelEl.value, 10); if (midi) regenerateHarmony(); });
 
   bpmUp.addEventListener('click', () => applyTempo((parseInt(bpmInput.value, 10) || bpm) + 1));
   bpmDown.addEventListener('click', () => applyTempo((parseInt(bpmInput.value, 10) || bpm) - 1));
@@ -946,7 +1209,7 @@
     Tone.Transport.bpm.value = bpm;
     Tone.Transport.timeSignature = [numerator, denominator];
     generateArrangement();
-    scheduleDrumAndBassParts(0);
+    scheduleAllParts(0);
 
     Tone.Transport.seconds = 0;
     Tone.Transport.start('+0.05');
@@ -964,6 +1227,7 @@
     Tone.Transport.cancel();
     if (drumPart) { drumPart.dispose(); drumPart = null; }
     if (bassPart) { bassPart.dispose(); bassPart = null; }
+    if (chordPart) { chordPart.dispose(); chordPart = null; }
     noteParts.forEach(p => { p.part.dispose(); p.synth.dispose(); });
     noteParts = [];
     isPlaying = false;
@@ -972,6 +1236,7 @@
     clearPlayhead();
     progFill.style.width = '0%';
     tCur.textContent = '0:00';
+    chordNow.textContent = '';
     cancelAnimationFrame(rafId);
     setStatus('Stopped. Tap Play to run it again.');
   }
@@ -984,6 +1249,9 @@
     tCur.textContent = fmtTime(t);
     const stepIdx = Math.floor((t % barDuration) / secPerStep) % totalSteps;
     highlightStep(stepIdx);
+    const barIdx = Math.floor(t / barDuration);
+    const barPlan = harmonyPlan[barIdx];
+    chordNow.textContent = barPlan ? `Now: ${chordSymbolOf(barPlan)}` : '';
     rafId = requestAnimationFrame(tick);
   }
 
@@ -1002,13 +1270,17 @@
     bassVal.textContent = bassVol.value + '%';
     if (bassBus) bassBus.gain.rampTo(bassVol.value / 100, 0.05);
   });
+  chordVol.addEventListener('input', () => {
+    chordVal.textContent = chordVol.value + '%';
+    if (chordBus) chordBus.gain.rampTo(chordVol.value / 100, 0.05);
+  });
 
   // ---------------------------------------------------------------------
   // Multi-track MIDI export: Original track(s) + Generated Drums + Generated Bass
   // ---------------------------------------------------------------------
   function exportMidiFile() {
     if (!midi) return;
-    if (!drumEvents.length && !bassEvents.length) generateArrangement(false);
+    if (!drumEvents.length && !bassEvents.length && !chordEvents.length) generateArrangement(false);
 
     const scale = tempoScale();
     const outMidi = new Midi();
@@ -1041,6 +1313,14 @@
     bTrack.channel = 1;
     bassEvents.forEach(ev => {
       bTrack.addNote({ midi: ev.midi, time: ev.time, duration: ev.duration, velocity: ev.velocity });
+    });
+
+    // Generated chords
+    const cTrack = outMidi.addTrack();
+    cTrack.name = harmonyMode === 'preset' ? `Generated Chords (${CHORD_CATALOG[chordPresetId].name})` : 'Generated Chords (auto)';
+    cTrack.channel = 2;
+    chordEvents.forEach(ev => {
+      ev.pitches.forEach(p => cTrack.addNote({ midi: p, time: ev.time, duration: ev.duration, velocity: ev.velocity }));
     });
 
     const bytes = outMidi.toArray();
