@@ -94,7 +94,7 @@
   /* ---- LED readout strip ---- */
   .readout{
     display:grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     margin: 18px 0;
   }
@@ -264,9 +264,6 @@
     font-size: 10.5px; color: var(--ink-dim); line-height: 1.5;
   }
 
-  @media (max-width: 760px){
-    .readout{ grid-template-columns: repeat(3, 1fr); }
-  }
   @media (max-width: 680px){
     .mixer{ grid-template-columns: 1fr 1fr; }
   }
@@ -322,7 +319,6 @@
         <option value="ballad">Ballad</option>
       </select>
     </div>
-    <div class="led-cell"><div class="k">Key</div><div class="v" id="keyOut">—</div></div>
     <div class="led-cell"><div class="k">Duration</div><div class="v" id="durOut">0:00</div></div>
   </div>
 
@@ -331,7 +327,7 @@
     <div class="row"><div class="rlabel" style="color:var(--snare)">SNARE</div><div class="steps" id="rowSnare"></div></div>
     <div class="row"><div class="rlabel" style="color:var(--hihat)">HI-HAT</div><div class="steps" id="rowHihat"></div></div>
     <div class="row"><div class="rlabel" style="color:var(--tom)">TOM</div><div class="steps" id="rowTom"></div></div>
-    <div class="grid-note">Tap any square to add or remove a hit — edits apply immediately, even mid-playback. A tom fill + crash still lands every 4th bar on top of whatever you've drawn here. Pop uses quarter-note hats while rock uses driving 8ths. The bass line follows detected chord roots and isn't step-grid shaped, so it isn't drawn.</div>
+    <div class="grid-note">Tap any square to add or remove a hit — edits apply immediately, even mid-playback. A tom fill + crash still lands every 4th bar on top of whatever you've drawn here. The bass line follows detected chord roots and isn't step-grid shaped, so it isn't drawn.</div>
     <button class="reset-pattern" id="resetPatternBtn">↺ Reset pattern to genre default</button>
   </div>
 
@@ -395,7 +391,7 @@
     Genre is inferred from tempo, note density and instrument program numbers — override it any time with the
     dropdown above and the drum pattern regenerates instantly. Harmony defaults to auto-detecting chords from
     the MIDI file; switch to "Choose a progression" for a roman-numeral chord set with proper voice-leading —
-    the bass line always follows whichever chords are active. The four buses feed a shared compressor/limiter with headroom to prevent summed-bus clipping. On iPhone/iPad, audio unlocks on your first tap,
+    the bass line always follows whichever chords are active. On iPhone/iPad, audio unlocks on your first tap,
     so use the Play button rather than autoplay.
   </footer>
 </div>
@@ -419,8 +415,6 @@
   let barDuration = 2;        // seconds per bar
   let pattern = { kick: [], snare: [], hihat: [], tom: [] }; // one-bar template, editable by tap
   let genre = 'pop';
-  let detectedKey = { pc: 0, scale: 'major', score: 0, confidence: 0 };
-  let detectedKeyLabel = 'C major';
 
   let drumEvents = [];        // full-song absolute-time drum hits, also used for MIDI export
   let bassEvents = [];        // full-song absolute-time bass notes, also used for MIDI export
@@ -450,8 +444,7 @@
   let harmonyPlan = [];       // per-bar [{ pc, isMinor }], shared by bass + chords
   let chordEvents = [];       // full-song absolute-time chord hits, also used for MIDI export
 
-  let originalBus = null, drumBus = null, bassBus = null, chordBus = null;
-  let masterGain = null, masterCompressor = null, masterLimiter = null;
+  let originalBus = null, drumBus = null, bassBus = null, chordBus = null, masterBus = null;
   let kickSynth, snareSynth, hihatSynth, tomSynth, crashSynth, bassSynth, chordSynth;
   let noteParts = [];         // Tone.Part instances for the original MIDI
   let drumPart = null, bassPart = null, chordPart = null;
@@ -501,7 +494,6 @@
   const chordNow       = document.getElementById('chordNow');
   const chordVol       = document.getElementById('chordVol');
   const chordVal       = document.getElementById('chordVal');
-  const keyOut          = document.getElementById('keyOut');
 
   const fmtTime = s => {
     s = Math.max(0, s|0);
@@ -537,76 +529,6 @@
     if (hasDistGuitar || (bpmVal >= 108 && bpmVal <= 165)) return 'rock';
     if (hasAcousticPno && bpmVal < 100) return 'pop';
     return 'pop';
-  }
-
-  // ---------------------------------------------------------------------
-  // Global key detection — degree-weighted and relative-major/minor aware.
-  // ---------------------------------------------------------------------
-  const KEY_PROFILES = {
-    major: [6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88],
-    minor: [6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17]
-  };
-
-  function detectKey(m) {
-    const hist = new Array(12).fill(0);
-    const notes = [];
-    m.tracks.forEach(track => {
-      if (track.channel === 9) return;
-      track.notes.forEach(n => {
-        const pc = ((n.midi % 12) + 12) % 12;
-        const dur = Math.max(0.02, n.duration || 0.02);
-        const vel = 0.35 + 0.65 * Math.max(0, Math.min(1, n.velocity == null ? 0.8 : n.velocity));
-        const weight = dur * vel;
-        hist[pc] += weight;
-        notes.push({ n, pc, weight });
-      });
-    });
-    const total = hist.reduce((a, b) => a + b, 0);
-    if (!total) return { pc: 0, scale: 'major', score: 0, confidence: 0 };
-
-    const tonicHints = new Array(12).fill(0);
-    notes.forEach(({ n, pc, weight }) => {
-      const start = n.time || 0;
-      const end = start + (n.duration || 0);
-      if (start < 1.5) tonicHints[pc] += weight * 0.18;
-      if (end > Math.max(0, (m.duration || end) - 2.0)) tonicHints[pc] += weight * 0.28;
-    });
-
-    const normHist = hist.map(v => v / total);
-    const candidates = [];
-    for (const scaleName of ['major', 'minor']) {
-      const profile = KEY_PROFILES[scaleName];
-      for (let tonic = 0; tonic < 12; tonic++) {
-        let dot = 0, p2 = 0, h2 = 0;
-        for (let pc = 0; pc < 12; pc++) {
-          const x = normHist[pc];
-          const y = profile[(pc - tonic + 12) % 12];
-          dot += x * y; p2 += x * x; h2 += y * y;
-        }
-        const corr = dot / Math.sqrt(Math.max(1e-9, p2 * h2));
-        const scale = SCALES[scaleName];
-        let inScale = 0, outScale = 0;
-        for (let d = 0; d < 12; d++) {
-          if (scale.includes(d)) inScale += normHist[(tonic + d) % 12];
-          else outScale += normHist[(tonic + d) % 12];
-        }
-        const degreeBonus =
-          normHist[tonic] * 1.60 +
-          normHist[(tonic + scale[2]) % 12] * 0.95 +
-          normHist[(tonic + scale[4]) % 12] * 0.80 +
-          normHist[(tonic + scale[5]) % 12] * 0.35;
-        const score = corr * 1.9 + degreeBonus + inScale * 0.55 - outScale * 0.75 +
-          (tonicHints[tonic] / total) * 0.65;
-        candidates.push({ pc: tonic, scale: scaleName, score });
-      }
-    }
-    candidates.sort((a, b) => b.score - a.score);
-    const best = candidates[0], second = candidates[1] || best;
-    return { ...best, confidence: Math.max(0, Math.min(1, (best.score - second.score) * 2.5)) };
-  }
-
-  function keyLabel(key) {
-    return `${NOTE_NAMES[key.pc]} ${key.scale === 'minor' ? 'minor' : 'major'}`;
   }
 
   // ---------------------------------------------------------------------
@@ -653,18 +575,15 @@
         break;
 
       case 'pop':
-        // Lighter pop groove: quarter-note hats + downbeat/syncopated kick.
         kick[0] = true;
-        if (beats > 2) kick[at(2)] = true;
-        { const syncStep = at(1) - Math.max(1, Math.floor(spb / 2)); if (syncStep > 0) kick[syncStep] = true; }
+        { const syncStep = at(1) + Math.floor(spb / 2); if (syncStep < steps) kick[syncStep] = true; } // kick pushes ahead of beat 2
         if (beats > 1) snare[at(1)] = true;
         if (beats > 3) snare[at(3)] = true;
-        for (let b = 0; b < beats; b++) hihat[at(b)] = true; // quarter notes
+        for (let b = 0; b < beats; b++) hihat[at(b)] = true; // lighter quarter-note hats, not rock's driving 8ths
         break;
 
       case 'rock':
       default:
-        // Driving rock groove: solid 1/3 kick + 8th-note hats.
         kick[0] = true;
         if (beats > 2) kick[at(2)] = true;
         if (beats > 1) snare[at(1)] = true;
@@ -697,6 +616,35 @@
       result.push({ pc, isMinor });
     }
     return result; // [{ pc: 0-11, isMinor }] per bar
+  }
+
+  // Global key detection for the whole song — used to default the Root/Scale
+  // controls when switching to "Choose a progression", so a picked chord set
+  // doesn't clash against the original MIDI's actual key. Scores each of the
+  // 24 root+mode candidates by how much of the song's (duration-weighted)
+  // pitch-class content falls on that scale's 7 notes, picks the best fit.
+  // Degree weights (tonic weighted highest, then 5th, then 3rd, ...) — a flat
+  // "which 7 notes are used" mask can't tell relative major/minor apart
+  // (e.g. Eb major and C minor share the exact same 7 notes), so scale
+  // degrees need different importance, not just membership.
+  const KEY_PROFILE_MAJOR = { 0: 5, 2: 2, 4: 3.5, 5: 2, 7: 4, 9: 2, 11: 1.5 };
+  const KEY_PROFILE_MINOR = { 0: 5, 2: 2, 3: 3.5, 5: 2, 7: 4, 8: 2, 10: 1.5 };
+
+  function detectGlobalKey(m) {
+    const weights = new Array(12).fill(0);
+    m.tracks.forEach(t => {
+      if (t.channel === 9) return;
+      t.notes.forEach(n => { weights[((n.midi % 12) + 12) % 12] += n.duration; });
+    });
+    let best = { pc: 0, isMinor: false, score: -1 };
+    for (let root = 0; root < 12; root++) {
+      [['major', KEY_PROFILE_MAJOR], ['minor', KEY_PROFILE_MINOR]].forEach(([modeName, profile]) => {
+        let score = 0;
+        Object.keys(profile).forEach(iv => { score += weights[(root + Number(iv)) % 12] * profile[iv]; });
+        if (score > best.score) best = { pc: root, isMinor: modeName === 'minor', score };
+      });
+    }
+    return { pc: best.pc, isMinor: best.isMinor };
   }
 
   const LETTER_TO_PC = { C:0, 'C#':1, DB:1, D:2, 'D#':3, EB:3, E:4, F:5, 'F#':6, GB:6, G:7, 'G#':8, AB:8, A:9, 'A#':10, BB:10, B:11 };
@@ -816,16 +764,12 @@
       case 'ballad':                                              // sustained whole-bar root
         ev.push({ step: 0, semitone: 0, len: steps });
         break;
-      case 'pop':                                                 // syncopated root/fifth pop pulse
-        ev.push({ step: 0, semitone: 0, len: Math.max(1, Math.round(spb * 0.8)) });
-        if (beats > 1) ev.push({ step: Math.max(1, at(1) - Math.floor(spb / 2)), semitone: 7, len: Math.max(1, Math.floor(spb / 2)) });
-        if (beats > 2) ev.push({ step: at(2), semitone: 0, len: spb });
-        if (beats > 3) ev.push({ step: at(3), semitone: 7, len: Math.max(1, Math.floor(spb / 2)) });
+      case 'pop':                                                 // root / fifth alternation
+        for (let b = 0; b < beats; b++) ev.push({ step: at(b), semitone: (b % 2 === 1 ? 7 : 0), len: spb });
         break;
       case 'rock':
-      default:                                                    // driving root pulse with octave pickup
+      default:                                                    // driving quarter-note root pulse
         for (let b = 0; b < beats; b++) ev.push({ step: at(b), semitone: 0, len: spb });
-        if (steps > spb * 2 + Math.floor(spb / 2)) ev.push({ step: spb * 2 + Math.floor(spb / 2), semitone: 12, len: Math.max(1, Math.floor(spb / 2)) });
         break;
     }
     return ev;
@@ -1001,10 +945,7 @@
   function updateChordPreview() {
     if (harmonyMode === 'preset') {
       const preset = CHORD_CATALOG[chordPresetId] || CHORD_CATALOG[0];
-      const selectedKey = `${NOTE_NAMES[chordRootSel]} ${chordScaleSel}`;
-      const detectedText = `${NOTE_NAMES[detectedKey.pc]} ${detectedKey.scale}`;
-      const matchText = selectedKey === detectedText ? `matches detected ${detectedText}` : `detected ${detectedText}; selected ${selectedKey}`;
-      chordPreview.textContent = `${selectedKey} — ${preset.roman.join(' · ')} (loops every ${preset.roman.length} bars; ${matchText})`;
+      chordPreview.textContent = `${NOTE_NAMES[chordRootSel]} ${chordScaleSel} — ${preset.roman.join(' · ')} (loops every ${preset.roman.length} bars)`;
     } else {
       chordPreview.textContent = 'Chords follow the harmony detected in your MIDI file; the bass line uses the same chords, bar for bar.';
     }
@@ -1048,20 +989,14 @@
   // ---------------------------------------------------------------------
   // Audio engine setup
   // ---------------------------------------------------------------------
-  function ensureMasterChain() {
-    if (masterLimiter) return;
-    masterGain = new Tone.Gain(0.72);
-    masterCompressor = new Tone.Compressor({
-      threshold: -18, ratio: 3, attack: 0.003, release: 0.15, knee: 8
-    });
-    masterLimiter = new Tone.Limiter(-1);
-    masterGain.chain(masterCompressor, masterLimiter, Tone.Destination);
+  function ensureMasterBus() {
+    if (!masterBus) masterBus = new Tone.Limiter(-1).toDestination();
+    return masterBus;
   }
 
   function buildDrumSynths() {
-    ensureMasterChain();
     if (drumBus) drumBus.dispose();
-    drumBus = new Tone.Gain((drumVol.value / 100) * 0.72).connect(masterGain);
+    drumBus = new Tone.Gain(drumVol.value / 100).connect(ensureMasterBus());
 
     kickSynth = new Tone.MembraneSynth({
       pitchDecay: 0.045, octaves: 6,
@@ -1089,7 +1024,7 @@
     }).connect(drumBus);
 
     if (bassBus) bassBus.dispose();
-    bassBus = new Tone.Gain((bassVol.value / 100) * 0.72).connect(masterGain);
+    bassBus = new Tone.Gain(bassVol.value / 100).connect(ensureMasterBus());
     bassSynth = new Tone.MonoSynth({
       oscillator: { type: genre === 'electronic' ? 'sawtooth' : 'triangle' },
       envelope: { attack: 0.015, decay: 0.2, sustain: 0.55, release: 0.25 },
@@ -1097,7 +1032,7 @@
     }).connect(bassBus);
 
     if (chordBus) chordBus.dispose();
-    chordBus = new Tone.Gain((chordVol.value / 100) * 0.72).connect(masterGain);
+    chordBus = new Tone.Gain(chordVol.value / 100).connect(ensureMasterBus());
     chordSynth = new Tone.PolySynth(Tone.Synth, {
       oscillator: { type: 'triangle' },
       envelope: { attack: 0.05, decay: 0.3, sustain: 0.55, release: 0.9 }
@@ -1218,15 +1153,6 @@
       genre = detectGenre(midi, bpm);
       genreSelect.value = genre;
       genreSelect.disabled = false;
-
-      detectedKey = detectKey(midi);
-      detectedKeyLabel = keyLabel(detectedKey);
-      keyOut.textContent = detectedKeyLabel;
-      chordRootSel = detectedKey.pc;
-      chordScaleSel = detectedKey.scale;
-      chordRootSelEl.value = String(chordRootSel);
-      chordScaleSelEl.value = chordScaleSel;
-
       generateArrangement(true);
       renderGrid();
 
@@ -1236,6 +1162,11 @@
       tsDen.value = String(denominator);
       tsNum.disabled = false; tsDen.disabled = false;
       harmonyModeSel.disabled = false;
+      const detectedKey = detectGlobalKey(midi);
+      chordRootSel = detectedKey.pc;
+      chordScaleSel = detectedKey.isMinor ? 'minor' : 'major';
+      chordRootSelEl.value = String(chordRootSel);
+      chordScaleSelEl.value = chordScaleSel;
       chordRootSelEl.disabled = false; chordScaleSelEl.disabled = false; chordPresetSelEl.disabled = false;
       durOut.textContent = fmtTime(songDuration());
       tTotal.textContent = fmtTime(songDuration());
@@ -1245,7 +1176,7 @@
       dropLabel.textContent = 'Tap to load a different file';
       playBtn.disabled = false;
       exportBtn.disabled = false;
-      setStatus(`Ready — key ${detectedKeyLabel}; ${midi.tracks.filter(t => t.notes.length).length} track(s) found. Tap Play to start.`);
+      setStatus(`Ready — ${midi.tracks.filter(t => t.notes.length).length} track(s) found, key ${NOTE_NAMES[chordRootSel]} ${chordScaleSel}. Tap Play to start.`);
     } catch (err) {
       console.error(err);
       setStatus('Could not parse that file — please choose a valid .mid file.', true);
@@ -1376,8 +1307,7 @@
     if (!midi) return;
     await Tone.start(); // required user-gesture unlock for iOS/Safari
 
-    ensureMasterChain();
-    if (!originalBus) originalBus = new Tone.Gain((origVol.value / 100) * 0.72).connect(masterGain);
+    if (!originalBus) originalBus = new Tone.Gain(origVol.value / 100).connect(ensureMasterBus());
     buildDrumSynths();
     buildNoteParts(midi);
     Tone.Transport.bpm.value = bpm;
@@ -1434,19 +1364,19 @@
 
   origVol.addEventListener('input', () => {
     origVal.textContent = origVol.value + '%';
-    if (originalBus) originalBus.gain.rampTo((origVol.value / 100) * 0.72, 0.05);
+    if (originalBus) originalBus.gain.rampTo(origVol.value / 100, 0.05);
   });
   drumVol.addEventListener('input', () => {
     drumVal.textContent = drumVol.value + '%';
-    if (drumBus) drumBus.gain.rampTo((drumVol.value / 100) * 0.72, 0.05);
+    if (drumBus) drumBus.gain.rampTo(drumVol.value / 100, 0.05);
   });
   bassVol.addEventListener('input', () => {
     bassVal.textContent = bassVol.value + '%';
-    if (bassBus) bassBus.gain.rampTo((bassVol.value / 100) * 0.72, 0.05);
+    if (bassBus) bassBus.gain.rampTo(bassVol.value / 100, 0.05);
   });
   chordVol.addEventListener('input', () => {
     chordVal.textContent = chordVol.value + '%';
-    if (chordBus) chordBus.gain.rampTo((chordVol.value / 100) * 0.72, 0.05);
+    if (chordBus) chordBus.gain.rampTo(chordVol.value / 100, 0.05);
   });
 
   // ---------------------------------------------------------------------
